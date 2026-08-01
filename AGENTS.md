@@ -18,6 +18,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Never store, transmit, log, or commit private keys or seed phrases. Browser wallet signing is self-custody. A persistent executor must use a separately configured encrypted signer policy.
 - Never report launch, buy, or sell success until the signature/account is verified through RPC.
 - Do not implement fake volume, candle painting, mixer/evasion promises, aged-wallet sales, wash trading, or fabricated deploy history. Use the legitimate replacements defined in the handoff.
-- Devnet may be executable by default. Keep Mainnet locked until RPC, relay, signer, risk limits, funding, and an explicit operator confirmation are configured.
+- Sunder is dual-chain: Solana Mainnet and Ethereum/EVM Mainnet are required production modes. Devnet and Sepolia are test environments, not the final product scope.
+- Keep funded Mainnet execution locked until the corresponding RPC, relay, signer, risk limits, funding, and explicit operator confirmation are configured, but implement the Mainnet adapters, selectors, UI, and readiness checks now.
 - Before every deployment, run lint, typecheck, tests, build, rendered desktop/mobile QA, and a production URL smoke test.
 - Use a separate process/service for the low-latency executor. Never install it into an existing ArcTrenches service or port.

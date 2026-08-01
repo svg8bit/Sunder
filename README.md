@@ -1,12 +1,12 @@
 # Sunder
 
-Sunder is a self-custody Solana launch and execution console inspired by the workflow coverage of Vortex Deployer, rebuilt with an independent brand, auditable state, and RPC-confirmed outcomes.
+Sunder is a self-custody Solana and Ethereum/EVM launch and execution console inspired by the workflow coverage of Vortex Deployer, rebuilt with an independent brand, auditable state, and on-chain-confirmed outcomes.
 
 The project is being transferred to the isolated `/opt/sunder` workspace on the ArcTrenches VPS. Read [`docs/HANDOFF.md`](docs/HANDOFF.md) before implementation.
 
 ## Product areas
 
-- Sniper Engine (P0)
+- Dual-chain Sniper Engine for Solana and EVM (P0)
 - Launch Studio and Quick Deploy
 - Wallet roles, groups, funding, and collecting
 - Projects, Swap Manager, Buy Tasks, Auto TP, Smart Sell, and Anti-Sniper
@@ -15,7 +15,7 @@ The project is being transferred to the isolated `/opt/sunder` workspace on the 
 
 ## Safety model
 
-Keys remain in the user's wallet. The public web app never accepts private keys. Devnet is the default executable network; Mainnet stays locked until external infrastructure and signer policy are configured and verified.
+Keys remain in the user's wallet. The public web app never accepts private keys. Solana Mainnet and Ethereum Mainnet are required product modes; Devnet and Sepolia provide safe automated verification. Funded Mainnet execution stays locked until external infrastructure, signer policy, risk limits, and operator confirmation are configured and verified.
 
 ## Current stack
 
