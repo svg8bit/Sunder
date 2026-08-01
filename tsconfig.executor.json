@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "declaration": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "outDir": "dist/executor",
+    "rootDir": ".",
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": [
+    "packages/sniper-engine/src/**/*.ts",
+    "packages/chain-solana/src/**/*.ts",
+    "packages/chain-evm/src/**/*.ts",
+    "packages/executor/src/**/*.ts"
+  ],
+  "exclude": ["**/*.test.ts"]
+}
