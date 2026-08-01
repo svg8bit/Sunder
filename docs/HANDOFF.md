@@ -4,7 +4,7 @@ This document transfers the complete user request, authenticated competitor rese
 
 ## User outcome
 
-Build and publicly ship a separate product named **Sunder** that covers the useful workflows of `vortexdeployer.com` under an independent brand. The user wants familiar labels and minimal wording changes so the product is immediately understandable. The product must be fast, functional, wallet-connected, and production-oriented. The **Sniper Engine is P0** and must be a real execution architecture rather than a visual mock.
+Build and publicly ship a separate product named **Sunder** that covers the useful workflows of `vortexdeployer.com` under an independent brand. The user wants familiar labels and minimal wording changes so the product is immediately understandable. The product must be fast, functional, wallet-connected, and production-oriented across **Solana Mainnet and Ethereum/EVM Mainnet**. Devnet and Sepolia are test environments, not the final product boundary. The **dual-chain Sniper Engine is P0** and must be a real execution architecture rather than a visual mock.
 
 Required delivery:
 
@@ -12,8 +12,8 @@ Required delivery:
 2. Public GitHub repository `svg8bit/Sunder`, committed and pushed.
 3. Public Vercel production deployment in a separate Vercel project.
 4. Working local preview plus production browser verification.
-5. Devnet wallet and transaction flow that is genuinely executable.
-6. Mainnet execution code/configuration boundary that remains locked until safe RPC, relay, signer, funding, and operator confirmation exist.
+5. Solana Wallet Standard and Ethereum/EVM browser-wallet flows with genuinely executable Devnet and Sepolia verification transactions.
+6. Implemented Solana Mainnet and Ethereum Mainnet modes, adapters, readiness checks, and UI. Funded execution remains locked until safe RPC, relay, signer, funding, and operator confirmation exist.
 7. Tests, performance checks, desktop/mobile rendered QA, architecture docs, and honest capability states.
 
 ## Accepted visual direction
@@ -138,6 +138,70 @@ Observed platforms: Pump, Bonk, Bonkers, LaunchLab, Bags, Printr. Classic SPL an
 - Leaders: public PnL, volume, win rate, wallet counts, privacy settings.
 - Profile: referrals, subscription, export keys, PIN/password, rewards/cashback. Do not copy custody/key export or pay competitor subscriptions.
 
+## Authenticated Vortex EVM inventory
+
+The authenticated EVM application was inspected on 2026-08-02 after the user clarified that Sunder must support both Solana and Ethereum. Captures are stored as `docs/research/screenshots/vortex-evm-*.jpg`. The EVM application is mounted under `/evm`; `/evm/docs` returns a real Page not found state, so public EVM documentation was not available.
+
+### EVM shell and chain switching
+
+- Navigation: Dashboard, Projects, Wallets, Swap, Create Project, and a SOL button that returns to the Solana product.
+- The chain selector exposes `Robinhood` and `Ethereum`.
+- Explorer links observed in the frontend: `https://robinhood.cloud.blockscout.com` and `https://etherscan.io`.
+- Wrapped-native addresses observed in the public config:
+  - Robinhood: `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73`
+  - Ethereum WETH: `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2`
+- Dashboard shows tokens launched, total native balance across global wallets, net ETH flow, and project history. Net flow is explicitly not profit.
+
+### EVM projects and launch wizard
+
+- Project filters: All, Pending, Deployed.
+- Create Project offers `New Project` and `CTO` for an existing `0x` token address.
+- Launchpads: `flap` (tax or no-tax) and `pons` (simple no-tax launch).
+- Metadata: name, symbol, description, image, website, X, Telegram, Discord, Farcaster, chain.
+- `flap` exposes optional initial native liquidity. Zero is described as a dead pool that becomes live on the first buy.
+- Advanced `flap` configuration:
+  - no-tax or tax mode;
+  - buy and sell tax percentage;
+  - 10,000-BPS distribution across marketing/dev, reflections, burn/deflation, and LP;
+  - tax duration, with a frontend minimum of 86,400 seconds for taxed launches;
+  - optional commission receiver;
+  - anti-farmer/anti-snipe duration;
+  - CREATE2 vanity salt as bytes32 or phrase.
+- The frontend asks the backend to preview a CREATE2 address, but only marks it verified when the live factory simulation returns a valid address and salt. Preview failure does not block deploy.
+- Wizard steps: Metadata; Wallets & Buy; Overview & Deploy.
+- Wallet step actions: Create, Import, Global, Import Dev, Fund. It displays total ETH balance and allows a custom fee wallet that receives trading fees and initial-buy tokens.
+- Saved launch configuration contains `launchMode`, selected wallet IDs and amounts, bundle/task/sniper wallet collections, separate bundle/sniper amounts, and `sniperIntervals` with a default `[0, 0]`.
+
+### EVM wallet custody
+
+- The UI explicitly states: keys are generated server-side and encrypted at rest with AES-256-GCM; private keys are later revealed through Export.
+- Project and Global wallets support Create, Import, Export, Fund, Collect, groups, bulk create (up to 100), and import into a project.
+- The selected chain is stored on each wallet. Global wallets from another chain are hidden from project import.
+- Sunder must not reproduce this custody boundary. Browser-wallet and policy-limited signer integrations must replace server-side plaintext-key import/export.
+
+### EVM Swap Manager and tasks
+
+- Swap Manager includes project/token selection, chart, activity, trade panel, buy/sell, Buy Tasks, Settings, Lock, Burn, Send/Funding, Wallets, Smart Sell, Auto TP, Sell All, Sell All excluding dev, launch-buy versus other-wallet grouping, and per-wallet results.
+- It detects Uniswap V2, V3, or V4 venue as a read-only value.
+- Swap payloads contain project, direction, wallet IDs, `slippageBps`, execute flag, token override, buy amount in wei or sell percentage.
+- The frontend supports exact, range, percentage, and full-balance Buy Task modes; initial delay; 0–600,000 ms inter-wallet jitter; slippage; optional V3 fee tier; 0–50 retries; presets; and auto-start on launch.
+- It supports randomized/staggered multi-wallet sequences and first-wallet retry-until-landed behavior. Sunder may provide legitimate scheduled/rebalancing execution but must not present wash-trading or artificial-volume controls.
+- WebSocket: `wss://evm.vortexdeployer.com/ws?token=...` and subscription payload `{ action: "subscribe", projectId }`.
+- Observed message types: `subscribed`, `project_state`, `trades_initial`, `trade_activity`, `pool_trade`, `task_update`, `swap_leg_update`, `swap_progress`, `tp_triggered`, `smart_sell_triggered`.
+- Heartbeat runs every 25 seconds; reconnect delay doubles from 500 ms up to 8 seconds.
+
+### EVM public frontend API
+
+- Same-origin base: `/evm/api`.
+- Auth: `/auth/login`, `/auth/register`.
+- Projects: `/projects`, `/projects/:id`, `/projects/:id/logo`, `/projects/:id/refresh-metadata`, `/projects/:id/state`, `/projects/:id/pnl`, `/projects/:id/trades`, `/projects/:id/candles`, `/projects/:id/pool-trades`.
+- Launch: `/projects/:id/launch`, `/projects/:id/launch/preview-address`.
+- Token and prices: `/token-info/:chain/:address`, `/balance/:chain/:address`, `/price/eth`.
+- Wallets: project and global wallet CRUD, import/export, groups, and import-to-project endpoints.
+- Tasks: project tasks, arm/start/stop/delete, task presets, Auto TP, and Smart Sell endpoints.
+- Trading/funding: `/swap`, `/funding/disperse`, `/funding/collect`, `/disperser/start`, `/disperser/status/:id`.
+- The public frontend still delegates key generation, transaction signing, launch, swap, and task execution to the Vortex backend; no audited public Vortex EVM contract/executor implementation was exposed.
+
 ## Vortex documentation findings
 
 The entire public `/docs` tree was reviewed:
@@ -186,23 +250,25 @@ Important inconsistencies: docs show six/seven launch steps inconsistently; Bund
 
 - React 19 + Vite + TypeScript.
 - Tailwind 4, Radix primitives, shadcn-style local components, Lucide, Motion, Sonner, Zod, React Hook Form.
-- `@solana/client` + `@solana/react-hooks` with Wallet Standard auto-discovery.
-- Browser wallet connection, live Devnet balance, signed Devnet SOL transfer/simulation, and signature confirmation.
+- Solana: `@solana/client` + `@solana/react-hooks` with Wallet Standard auto-discovery.
+- EVM: current primary-source-verified `viem`/`wagmi` browser-wallet stack with WalletConnect-compatible connectors.
+- Network-family selector for Solana and EVM, plus environment selectors for Mainnet and Devnet/Sepolia.
+- Browser wallet connection, live balance, simulation, signed test-network transaction, and signature/receipt confirmation for both chain families.
 - Local persistent configuration may use versioned local storage for the first public build. Never store secret material.
 
 ### Sniper Engine (P0)
 
 Implement the engine as an independently testable package/process with these stages:
 
-1. `EventSource`: websocket/log/XID/manual/pool adapters emit normalized immutable events.
+1. `EventSource`: websocket/log/XID/manual/pool adapters emit normalized immutable events with chain family, chain ID, and source cursor.
 2. `RuleEvaluator`: accounts, keywords, regex, media, cooldown, spend/day, target allowlist/denylist, and risk filters.
 3. `QuoteProvider`: route and quote abstraction with staleness and max price-impact checks.
-4. `TransactionBuilder`: fresh blockhash, compute-unit price/limit, optional Jito tip, idempotency key, exact instruction manifest.
+4. `TransactionBuilder`: chain adapter builds either a fresh-blockhash Solana transaction with compute-unit policy and optional Jito tip, or an EIP-1559 EVM transaction with nonce, gas, deadline, and replacement policy; both include an idempotency key and exact instruction/call manifest.
 5. `Simulator`: pre-trade simulation, account diff, logs, estimated fee, slippage guard.
-6. `Signer`: browser Wallet Standard for interactive mode; encrypted external signer policy for an always-on executor. No HTTP private-key payloads.
-7. `RelayRouter`: health-weighted fanout adapters for standard RPC, Jito, Nozomi, and 0slot; provider credentials only through environment/secrets.
-8. `ConfirmationTracker`: signature subscription plus polling fallback; states `prepared`, `signed`, `submitted`, `processed`, `confirmed`, `finalized`, `failed`, `expired`.
-9. `RetryController`: blockhash refresh, bounded rebroadcast, attempt budget, jitter, deduplication, and stop-on-confirmation.
+6. `Signer`: Solana Wallet Standard and EVM EIP-1193 browser wallets for interactive mode; encrypted external signer policy for an always-on executor. No HTTP private-key payloads.
+7. `RelayRouter`: health-weighted Solana adapters for standard RPC, Jito, Nozomi, and 0slot; EVM adapters for standard RPC and officially documented private/MEV-protected submission such as Flashbots Protect; provider credentials only through environment/secrets.
+8. `ConfirmationTracker`: Solana signature subscription/polling or EVM receipt/finality/reorg tracking; states `prepared`, `signed`, `submitted`, `processed`, `confirmed`, `finalized`, `failed`, `expired`, and `reorged` where applicable.
+9. `RetryController`: Solana blockhash refresh or EVM nonce-preserving fee replacement, bounded rebroadcast, attempt budget, jitter, deduplication, and stop-on-confirmation.
 10. `RiskEngine`: max spend/transaction/day, max slippage/price impact, cooldown, kill switch, allowlists, Mainnet lock, and invariant checks.
 11. `AuditSink`: structured timestamps for event received, rule matched, quote, build, simulation, signature, each relay attempt, and confirmation.
 
@@ -223,6 +289,8 @@ Performance targets for local measurements (not external SLA promises): hot-path
 - Settings
 - Docs
 
+Every relevant product screen must preserve the selected chain family and render chain-specific wallet, unit, fee, relay, explorer, launchpad, quote, transaction, and confirmation controls. Do not show SOL units in EVM mode or ETH/gas semantics in Solana mode.
+
 Use familiar control labels where functional/generic, but do not copy Vortex branding or long-form proprietary copy. Every core navigation item, tab, form control, modal, and primary CTA must work with realistic data or an honest locked/unconfigured state.
 
 ## Current local scaffold state
@@ -238,10 +306,10 @@ Use familiar control labels where functional/generic, but do not copy Vortex bra
 2. Create/update the task goal and plan from this handoff.
 3. Convert scaffold to TypeScript; add lint, typecheck, Vitest, RTL, and performance scripts.
 4. Build shared domain/config/audit store and Sniper Engine package/tests first.
-5. Build wallet provider and real Devnet connect/balance/transfer/simulation/confirmation flow.
-6. Build all product screens and interactions using the accepted visuals.
-7. Add safe launch/token flow on Devnet; only enable program-specific Mainnet flows when current official SDK behavior is verified.
-8. Add executor service package, `.env.example`, health/readiness endpoints, systemd unit template, and runbook. Do not start a Mainnet signer.
+5. Build Solana Wallet Standard and EVM browser-wallet providers with real Devnet/Sepolia connect, balance, transfer, simulation, and confirmation flows.
+6. Build all product screens and interactions using the accepted visuals, including Solana/EVM family and network selectors.
+7. Add safe launch/token adapters for Devnet/Sepolia and implement production Solana Mainnet/Ethereum Mainnet modes. Keep funded execution unavailable until current official SDK behavior and external infrastructure are verified.
+8. Add a chain-agnostic executor service package, `.env.example`, health/readiness endpoints, systemd unit template, and runbook. Do not start a funded Mainnet signer.
 9. Run lint, typecheck, tests, build, `test:sites`, desktop/mobile Browser QA, accessibility checks, and local performance measurements.
 10. Produce `design-qa.md` with source path, screenshot path, viewport, comparison history, and `final result: passed|blocked`.
 11. Commit/push to the public GitHub repo.
@@ -250,4 +318,4 @@ Use familiar control labels where functional/generic, but do not copy Vortex bra
 
 ## Definition of done
 
-Done means the repository and public production URL exist; the accepted UI is closely matched on desktop/mobile; navigation/core controls work; wallet connection and a safe Devnet transaction path are verifiably executable; Sniper Engine logic is implemented and tested; relay/signer/Mainnet configuration is explicit and locked when absent; build/tests/QA pass; and no existing ArcTrenches service or secret was touched.
+Done means the repository and public production URL exist; the accepted UI is closely matched on desktop/mobile; navigation/core controls work; Solana and EVM product modes are implemented; wallet connection and safe Devnet/Sepolia transaction paths are verifiably executable; Solana Mainnet/Ethereum Mainnet adapters and readiness states exist; the dual-chain Sniper Engine is implemented and tested; relay/signer/funded-Mainnet configuration is explicit and locked when absent; build/tests/QA pass; and no existing ArcTrenches service or secret was touched.
