@@ -37,8 +37,10 @@ Additional viewport evidence:
 
 ## Automated Browser result
 
-Playwright ran the full two-project suite with one worker to stay inside the VPS memory envelope: **10 passed, 2 intentionally skipped** (each viewport skips only the evidence case belonging to the other viewport). The suite includes a controlled EIP-1193/Sepolia RPC flow that remains `submitted` until a canonical receipt is released, then verifies the exact zero-value self-transfer intent before showing `confirmed`. There were no failures. Reproduce with `npm run test:e2e`.
+Playwright ran the full two-project suite with one worker to stay inside the VPS memory envelope: **11 passed, 3 intentionally skipped** (viewport-specific evidence and desktop drag checks are skipped only where they do not apply). The suite includes permanent token-route checks, draggable terminal-panel persistence, and a controlled EIP-1193/Sepolia RPC flow that remains `submitted` until a canonical receipt is released, then verifies the exact zero-value self-transfer intent before showing `confirmed`. There were no failures. Reproduce with `npm run test:e2e`.
 
 ## Solana live terminal follow-up
 
 The user-provided Axiom terminal was subsequently used as an equal-size `1280 x 653` source target for the Solana-first `/swap` implementation. The required same-input full-view comparison, focused trade-dock comparison, three blocked iteration passes, final production desktop/mobile captures, interaction evidence, console checks, and final result are recorded in the project-root [`design-qa.md`](../design-qa.md).
+
+The 2026-08-02 Mainnet follow-up adds bounded confirmed Pump transaction backfill, stable per-mint market-cap calibration, permanent `/meme/<mint>?chain=sol` routes, TradingView attribution, a provisioned executor funding state, and a new combined Axiom/Sunder + mobile source/Sniper comparison at `artifacts/qa/terminal-mainnet-side-by-side.png`.

@@ -47,8 +47,9 @@ const routes: readonly { readonly id: RouteId; readonly label: string; readonly 
   { id: "docs", label: "Docs", icon: BookOpen, primary: true },
 ];
 
-function routeFromPath(): RouteId {
-  const value = window.location.pathname.replace(/^\//, "").split("/")[0];
+export function routeFromPath(pathname = window.location.pathname): RouteId {
+  const value = pathname.replace(/^\//, "").split("/")[0];
+  if (value === "meme") return "swap";
   return routes.some((route) => route.id === value) ? value as RouteId : "launch";
 }
 
@@ -63,6 +64,7 @@ export function useAppRoute() {
     if (route === next) return;
     window.history.pushState({}, "", `/${next}`);
     setRoute(next);
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   };
   return { route, navigate };
 }
@@ -104,6 +106,7 @@ export function AppShell({ children, route, navigate }: { readonly children: Rea
   const { chain } = useNetwork();
   const { audit } = useWorkspace();
   const nav = useMemo(() => routes, []);
+  const solanaExecutorProvisioned = chain.family === "solana" && Boolean(import.meta.env.VITE_SOLANA_EXECUTOR_PUBLIC_ADDRESS?.trim());
   return (
     <div className={cn("app-shell", route === "swap" && "app-shell--terminal")}>
       <header className="topbar">
@@ -159,8 +162,8 @@ export function AppShell({ children, route, navigate }: { readonly children: Rea
       </Popover.Root>
       <footer className="statusbar">
         <span><span className="statusbar__dot" /> Console online</span>
-        <span><Bot size={13} /> Executor <strong>not configured</strong></span>
-        <span><ShieldCheck size={13} /> Automation <strong>locked</strong></span>
+        <span><Bot size={13} /> Executor <strong>{solanaExecutorProvisioned ? "provisioned" : "not configured"}</strong></span>
+        <span><ShieldCheck size={13} /> Automation <strong>{solanaExecutorProvisioned ? "funding gate" : "locked"}</strong></span>
         <span><Gauge size={13} /> RPC confirmation required</span>
       </footer>
     </div>

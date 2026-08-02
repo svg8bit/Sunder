@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight, Check, CircleDot, Crosshair, Info, LockKeyhole, Play, Route, Shield, ShieldCheck, Zap } from "lucide-react";
+import { ArrowRight, Check, CircleDot, ClipboardCopy, Crosshair, Info, LockKeyhole, Play, Route, Shield, ShieldCheck, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -57,12 +57,12 @@ export function SniperScreen() {
       trigger: "new_mint",
       target: family === "solana" ? "So11111111111111111111111111111111111111112" : "0x0000000000000000000000000000000000000000",
       inputToken: family === "solana" ? "SOL" : "WETH",
-      maxSpend: 0.1,
+      maxSpend: family === "solana" ? 0.001 : 0.01,
       slippage: 1,
       priceImpact: 2,
-      priorityFee: family === "solana" ? 0.0005 : 1.5,
+      priorityFee: family === "solana" ? 0.0000125 : 1.5,
       maxFee: family === "evm" ? 35 : 0,
-      tip: family === "solana" ? 0.0002 : 0,
+      tip: family === "solana" ? 0.000001 : 0,
       cooldown: 30,
       maxAttempts: 3,
       maxConfirmedExecutions: 3,
@@ -84,9 +84,10 @@ export function SniperScreen() {
   useEffect(() => {
     form.setValue("target", family === "solana" ? "So11111111111111111111111111111111111111112" : "0x0000000000000000000000000000000000000000", { shouldValidate: true });
     form.setValue("inputToken", family === "solana" ? "SOL" : "WETH");
-    form.setValue("priorityFee", family === "solana" ? 0.0005 : 1.5, { shouldValidate: true });
+    form.setValue("maxSpend", family === "solana" ? 0.001 : 0.01, { shouldValidate: true });
+    form.setValue("priorityFee", family === "solana" ? 0.0000125 : 1.5, { shouldValidate: true });
     form.setValue("maxFee", family === "evm" ? 35 : 0, { shouldValidate: true });
-    form.setValue("tip", family === "solana" ? 0.0002 : 0, { shouldValidate: true });
+    form.setValue("tip", family === "solana" ? 0.000001 : 0, { shouldValidate: true });
     form.setValue("relay", family === "solana" ? "health-weighted" : "rpc-protect");
     setSimulationState("idle");
   }, [family, form]);
@@ -116,12 +117,14 @@ export function SniperScreen() {
       category: "configuration",
       action: mainnetLocked ? "Mainnet sniper remained locked" : "Sniper dry-run armed locally",
       detail: mainnetLocked
-        ? "Funded execution requires executor signer, RPC, relay, limits, funding and operator confirmation."
+        ? executorProvisioned
+          ? "The isolated executor is provisioned; funding and immediate operator confirmation remain."
+          : "Funded execution requires executor signer, RPC, relay, limits, funding and operator confirmation."
         : `${data.trigger} rule saved in dry-run mode; no persistent executor is connected.`,
       state: mainnetLocked ? "locked" : "local",
       network,
     });
-    toast.warning(mainnetLocked ? "Persistent Mainnet sniper execution is locked by policy; manual wallet swaps remain separate." : "Dry-run armed locally. Persistent executor is unconfigured.");
+    toast.warning(mainnetLocked ? executorProvisioned ? "Executor is provisioned; fund the bounded wallet before operator activation." : "Persistent Mainnet sniper execution is locked by policy; manual wallet swaps remain separate." : "Dry-run armed locally. Persistent executor is unconfigured.");
   });
 
   const solanaRelayConfig = {
@@ -129,12 +132,19 @@ export function SniperScreen() {
     nozomi: Boolean(import.meta.env.VITE_NOZOMI_STATUS_ENDPOINT),
     zeroSlot: Boolean(import.meta.env.VITE_ZERO_SLOT_STATUS_ENDPOINT),
   };
+  const executorAddress = family === "solana" ? import.meta.env.VITE_SOLANA_EXECUTOR_PUBLIC_ADDRESS?.trim() : undefined;
+  const executorProvisioned = Boolean(executorAddress);
+  const copyExecutorAddress = async () => {
+    if (!executorAddress) return;
+    await navigator.clipboard.writeText(executorAddress);
+    toast.success("Executor funding address copied.");
+  };
 
   return (
     <div className="screen sniper-screen">
       <div className="screen-heading">
         <div><span className="eyebrow">P0 execution pipeline / {family.toUpperCase()}</span><h1>Sniper</h1><p>Rules, risk, simulation, relays and canonical confirmation in one bounded path.</p></div>
-        <div className="heading-actions"><Badge tone={mainnetLocked ? "warn" : "good"}>{mainnetLocked ? "Persistent executor locked" : "Test mode"}</Badge><Button size="sm" onClick={() => setAdvanced((current) => !current)}>{advanced ? "Basic controls" : "Advanced controls"}</Button></div>
+        <div className="heading-actions"><Badge tone={mainnetLocked ? "warn" : "good"}>{mainnetLocked ? executorProvisioned ? "Funding gate" : "Persistent executor locked" : "Test mode"}</Badge><Button size="sm" onClick={() => setAdvanced((current) => !current)}>{advanced ? "Basic controls" : "Advanced controls"}</Button></div>
       </div>
       <div className="sniper-layout">
         <form className="sniper-form" onSubmit={(event) => event.preventDefault()}>
@@ -149,7 +159,7 @@ export function SniperScreen() {
               <Field label="Slippage tolerance" error={form.formState.errors.slippage?.message}><div className="input-unit"><Input type="number" step="0.1" {...form.register("slippage", { valueAsNumber: true })} /><span>%</span></div></Field>
             </div>
             {family === "solana" ? (
-              <div className="field-row"><Field label="Priority fee"><div className="input-unit"><Input type="number" step="0.0001" {...form.register("priorityFee", { valueAsNumber: true })} /><span>SOL</span></div></Field><Field label="Relay tip"><div className="input-unit"><Input type="number" step="0.0001" {...form.register("tip", { valueAsNumber: true })} /><span>SOL</span></div></Field></div>
+              <div className="field-row"><Field label="Priority fee"><div className="input-unit"><Input type="number" step="0.0000001" {...form.register("priorityFee", { valueAsNumber: true })} /><span>SOL</span></div></Field><Field label="Relay tip"><div className="input-unit"><Input type="number" step="0.000001" {...form.register("tip", { valueAsNumber: true })} /><span>SOL</span></div></Field></div>
             ) : (
               <div className="field-row"><Field label="Max fee per gas"><div className="input-unit"><Input type="number" step="0.1" {...form.register("maxFee", { valueAsNumber: true })} /><span>Gwei</span></div></Field><Field label="Priority fee"><div className="input-unit"><Input type="number" step="0.1" {...form.register("priorityFee", { valueAsNumber: true })} /><span>Gwei</span></div></Field></div>
             )}
@@ -183,12 +193,13 @@ export function SniperScreen() {
           </Panel>
           <Panel className="honesty-panel"><Info size={18} /><div><strong>No false success</strong><p>A relay response, predicted token address, or local simulation cannot produce a green execution state. Only a canonical signature/receipt does.</p></div></Panel>
           <Panel title="Current status">
-            <div className="status-list"><div><span>Rule</span><Badge tone={form.formState.isValid ? "good" : "warn"}>{form.formState.isValid ? "Valid" : "Incomplete"}</Badge></div><div><span>Simulation</span><Badge tone={simulationState === "passed" ? "good" : simulationState === "failed" ? "bad" : "neutral"}>{simulationState}</Badge></div><div><span>Executor</span><Badge tone="warn">Unconfigured</Badge></div><div><span>Persistent Mainnet</span><Badge tone="warn">Locked</Badge></div></div>
+            <div className="status-list"><div><span>Rule</span><Badge tone={form.formState.isValid ? "good" : "warn"}>{form.formState.isValid ? "Valid" : "Incomplete"}</Badge></div><div><span>Simulation</span><Badge tone={simulationState === "passed" ? "good" : simulationState === "failed" ? "bad" : "neutral"}>{simulationState}</Badge></div><div><span>Executor</span><Badge tone={executorProvisioned ? "good" : "warn"}>{executorProvisioned ? "Provisioned" : "Unconfigured"}</Badge></div><div><span>Persistent Mainnet</span><Badge tone="warn">Funding + confirmation</Badge></div></div>
+            {executorAddress ? <div className="keys-note"><ShieldCheck size={14} /><span>Dedicated bounded wallet: {executorAddress.slice(0, 6)}…{executorAddress.slice(-6)}</span><Button type="button" size="sm" variant="ghost" onClick={() => void copyExecutorAddress()}><ClipboardCopy size={13} /> Copy</Button></div> : null}
           </Panel>
         </aside>
       </div>
       <div className="sniper-actionbar">
-        <div className="environment-warning"><LockKeyhole size={20} /><div><strong>{chain.production ? `Persistent automation on ${chain.name}` : `Safe verification on ${chain.name}`}</strong><span>{chain.production ? "The executor stays locked until signer, RPC, relay, limits, funding and operator gates pass. Manual browser swaps remain separately user-signed." : "Dry-run and wallet verification are available; no persistent signer is connected."}</span></div></div>
+        <div className="environment-warning"><LockKeyhole size={20} /><div><strong>{chain.production ? `Persistent automation on ${chain.name}` : `Safe verification on ${chain.name}`}</strong><span>{chain.production ? executorProvisioned ? "RPC, Jito, signer policy and limits are provisioned. Funding and an immediate operator confirmation remain before the first bounded shot." : "The executor stays locked until signer, RPC, relay, limits, funding and operator gates pass. Manual browser swaps remain separately user-signed." : "Dry-run and wallet verification are available; no persistent signer is connected."}</span></div></div>
         <div className="button-pair"><Button size="lg" onClick={() => void simulate()}><Play size={18} /> Run simulation</Button><Button size="lg" variant="primary" onClick={() => void arm()}><Crosshair size={18} /> {chain.production ? "Check Mainnet lock" : "Arm dry-run"}</Button></div>
         <div className="keys-note"><ShieldCheck size={14} /> Your keys never enter Sunder. Browser wallets sign interactive transactions; the executor uses a separate signer policy.</div>
       </div>

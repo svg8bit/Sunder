@@ -15,7 +15,8 @@
     "packages/sniper-engine/src/**/*.ts",
     "packages/chain-solana/src/**/*.ts",
     "packages/chain-evm/src/**/*.ts",
-    "packages/executor/src/**/*.ts"
+    "packages/executor/src/**/*.ts",
+    "packages/signer/src/**/*.ts"
   ],
   "exclude": ["**/*.test.ts"]
 }

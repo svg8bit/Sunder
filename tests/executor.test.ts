@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BoundedRiskEngine, type ExecutionResult } from "../packages/sniper-engine/src/index.js";
+import { loadAutomationPolicy } from "../packages/executor/src/automation-policy.js";
 import { JsonlAuditSink } from "../packages/executor/src/audit.js";
 import { parseExecutorConfig } from "../packages/executor/src/config.js";
 import { evaluateReadiness } from "../packages/executor/src/readiness.js";
@@ -107,6 +108,30 @@ describe("executor configuration and readiness", () => {
     expect(config).toMatchObject({ killSwitch: true, mainnetEnabled: true });
     expect(config.mainnetMaxSpendAtomic).toMatchObject({ "solana:mainnet": 10n, "evm:mainnet": 30n });
     expect(() => parseExecutorConfig({ SUNDER_EVM_SEPOLIA_RPC_URL: "http://localhost.example/" })).toThrow(/HTTPS unless they target loopback/);
+  });
+
+  it("loads automation rules only from an owner-only, bounded policy file", async () => {
+    const paths = await fixture();
+    const policyPath = join(paths.directory, "automation.json");
+    await writeFile(policyPath, JSON.stringify({
+      version: 1,
+      enabled: true,
+      network: "solana:mainnet",
+      inputAmountLamports: "1000000",
+      relayFanout: 2,
+      feePolicy: { kind: "solana", computeUnitLimit: 250000, computeUnitPriceMicroLamports: "50000", tipLamports: "1000" },
+      rules: [{
+        id: "acceptance", name: "Acceptance", enabled: true, networks: ["solana:mainnet"], eventKinds: ["new_mint"],
+        accounts: [], keywords: ["SUNDER"], requireMedia: false, allowTargets: [], denyTargets: [],
+        maxSpendAtomic: "1000000", maxDailySpendAtomic: "5000000", maxSlippageBps: 500, maxPriceImpactBps: 2500,
+        cooldownMs: 0, maxAttempts: 2, maxConfirmedExecutions: 1,
+      }],
+    }), { mode: 0o600 });
+    const loaded = await loadAutomationPolicy(policyPath);
+    expect(loaded).toMatchObject({ ready: true, policy: { inputAmountLamports: 1_000_000n, rules: [{ keywords: ["SUNDER"], maxConfirmedExecutions: 1 }] } });
+
+    await chmod(policyPath, 0o644);
+    await expect(loadAutomationPolicy(policyPath)).resolves.toEqual({ ready: false, detail: "group-or-world-accessible" });
   });
 
   it("keeps Mainnet locked until every independent gate is configured", async () => {

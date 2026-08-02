@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { SOLANA_MAINNET_WS_URL } from "./client";
-import { fetchRecentTokens, mergeConfirmedPumpTrade, parseTokenInformationList, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
+import { SOLANA_MAINNET_RPC_URL, SOLANA_MAINNET_WS_URL } from "./client";
+import { fetchPumpTradeHistory, fetchRecentTokens, mergeConfirmedPumpTrade, mergePumpTradeHistory, parseTokenInformationList, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
 
 const RECENT_CACHE_KEY = "sunder:solana-recent-tokens:v1";
 const RECENT_CACHE_MAX_AGE_MS = 120_000;
@@ -55,9 +55,28 @@ export function usePumpTradeStream(input: {
 }) {
   const [trades, setTrades] = useState<readonly PumpTrade[]>([]);
   const [status, setStatus] = useState<"idle" | "connecting" | "live" | "failed">("idle");
+  const history = useQuery({
+    queryKey: ["solana", "pump", "trade-history", input.mint, input.decimals],
+    queryFn: ({ signal }) => fetchPumpTradeHistory({
+      mint: input.mint!,
+      decimals: input.decimals!,
+      rpcUrl: SOLANA_MAINNET_RPC_URL,
+      limit: 48,
+      signal,
+    }),
+    enabled: input.enabled && Boolean(input.mint) && input.decimals !== undefined,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    retry: 1,
+    refetchOnWindowFocus: false,
+  });
 
   useEffect(() => {
-    setTrades([]);
+    if (history.data) setTrades((current) => mergePumpTradeHistory(current, history.data));
+  }, [history.data]);
+
+  useEffect(() => {
+    setTrades(history.data ?? []);
     if (!input.enabled || !input.mint || input.decimals === undefined) {
       setStatus("idle");
       return;

@@ -18,6 +18,7 @@ import {
   Radio,
   RefreshCw,
   Search,
+  Share2,
   Settings2,
   ShieldCheck,
   Trash2,
@@ -44,6 +45,7 @@ import {
   type SwapExecutionState,
 } from "../solana/jupiter";
 import { safeTokenIcon, searchTokenInformation, type PumpTrade, type TokenInformation } from "../solana/market";
+import { tokenMintFromPathname, tokenTerminalPath } from "../solana/token-route";
 import { usePumpTradeStream, useRecentTokens } from "../solana/use-market";
 import { useNetwork } from "../state/network";
 import { SOLANA_SIGNER_AVAILABLE_EVENT, SOLANA_SIGNER_SELECTION_STORAGE_KEY, useSolanaWalletRegistry } from "../state/solana-wallet-registry";
@@ -123,9 +125,9 @@ function activeRecentToken(tokens: readonly TokenInformation[]): TokenInformatio
   }, undefined);
 }
 
-function copy(value: string): void {
+function copy(value: string, label = "Address"): void {
   if (!navigator.clipboard?.writeText) { toast.error("Clipboard is unavailable in this context."); return; }
-  void navigator.clipboard.writeText(value).then(() => toast.success("Address copied."), () => toast.error("Clipboard permission was denied."));
+  void navigator.clipboard.writeText(value).then(() => toast.success(`${label} copied.`), () => toast.error("Clipboard permission was denied."));
 }
 
 function tokenImage(token: TokenInformation, className: string) {
@@ -202,7 +204,7 @@ export function TradingTerminalScreen() {
   const [filter, setFilter] = useState<FeedFilter>("new");
   const [manualTokens, setManualTokens] = useState<readonly TokenInformation[]>([]);
   const [pinnedToken, setPinnedToken] = useState<TokenInformation>();
-  const [selectedMint, setSelectedMint] = useState<string>();
+  const [selectedMint, setSelectedMint] = useState<string | undefined>(() => tokenMintFromPathname(window.location.pathname));
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
   const [observations, setObservations] = useState<Readonly<Record<string, readonly PricePoint[]>>>({});
@@ -234,6 +236,7 @@ export function TradingTerminalScreen() {
   const [error, setError] = useState<string>();
   const quoteAbort = useRef<AbortController | undefined>(undefined);
   const executing = useRef(false);
+  const routeLookups = useRef(new Set<string>());
 
   const invalidateQuote = useCallback(() => {
     quoteAbort.current?.abort();
@@ -252,10 +255,44 @@ export function TradingTerminalScreen() {
   }, [manualTokens, pinnedToken, recent.data]);
   const selected = tokens.find((token) => token.id === selectedMint);
 
+  const selectToken = useCallback((mint: string, navigation: "push" | "replace" | "none" = "push") => {
+    setSelectedMint(mint);
+    if (navigation === "none") return;
+    const path = tokenTerminalPath(mint);
+    if (`${window.location.pathname}${window.location.search}` === path) return;
+    window.history[navigation === "push" ? "pushState" : "replaceState"]({}, "", path);
+  }, []);
+
   useEffect(() => {
     const fallback = activeRecentToken(tokens);
-    if (fallback && (!selectedMint || !tokens.some((token) => token.id === selectedMint))) setSelectedMint(fallback.id);
-  }, [selectedMint, tokens]);
+    if (fallback && !selectedMint) selectToken(fallback.id, "replace");
+  }, [selectToken, selectedMint, tokens]);
+
+  useEffect(() => {
+    const onHistory = () => {
+      const mint = tokenMintFromPathname(window.location.pathname);
+      if (mint) selectToken(mint, "none");
+    };
+    window.addEventListener("popstate", onHistory);
+    return () => window.removeEventListener("popstate", onHistory);
+  }, [selectToken]);
+
+  useEffect(() => {
+    if (!selectedMint || selected || routeLookups.current.has(selectedMint)) return;
+    routeLookups.current.add(selectedMint);
+    const controller = new AbortController();
+    void searchTokenInformation(selectedMint, controller.signal).then((results) => {
+      const exact = results.find((token) => token.id === selectedMint) ?? results[0];
+      if (!exact) throw new Error("The token page mint is not indexed by Jupiter.");
+      setManualTokens((current) => Object.freeze([exact, ...current].filter((token, index, values) => values.findIndex((candidate) => candidate.id === token.id) === index).slice(0, 40)));
+      if (exact.id !== selectedMint) selectToken(exact.id, "replace");
+    }).catch((routeError) => {
+      if (controller.signal.aborted) return;
+      toast.error(routeError instanceof Error ? routeError.message : String(routeError));
+      setSelectedMint(undefined);
+    });
+    return () => controller.abort();
+  }, [selectToken, selected, selectedMint]);
 
   useEffect(() => {
     if (selected && selected !== pinnedToken) setPinnedToken(selected);
@@ -370,7 +407,7 @@ export function TradingTerminalScreen() {
       const results = await searchTokenInformation(search);
       if (!results[0]) throw new Error("No Jupiter-indexed token matched the query.");
       setManualTokens((current) => Object.freeze([...results.slice(0, 20), ...current].filter((token, index, values) => values.findIndex((candidate) => candidate.id === token.id) === index).slice(0, 40)));
-      setSelectedMint(results[0].id);
+      selectToken(results[0].id);
     } catch (searchError) {
       toast.error(searchError instanceof Error ? searchError.message : String(searchError));
     } finally {
@@ -554,7 +591,7 @@ export function TradingTerminalScreen() {
           {selected ? tokenImage(selected, "terminal-token-strip__icon") : <span className="terminal-token-strip__icon">··</span>}
           <span>
             <strong>{selected?.name ?? (live ? "Loading live pools" : "Select Solana Mainnet")} <b>{selected?.symbol ?? "—"}</b></strong>
-            <small>{selected ? <><button type="button" onClick={() => copy(selected.id)}>{shorten(selected.id, 7, 6)} <Copy size={11} /></button> · {sourceLabel(selected)}</> : "Jupiter Tokens V2 · no synthetic market state"}</small>
+            <small>{selected ? <><button type="button" onClick={() => copy(selected.id)}>{shorten(selected.id, 7, 6)} <Copy size={11} /></button> · {sourceLabel(selected)} · <button type="button" onClick={() => copy(window.location.href, "Token link")} aria-label={`Copy ${selected.symbol} token page link`}>link <Share2 size={11} /></button></> : "Jupiter Tokens V2 · no synthetic market state"}</small>
           </span>
         </div>
         <div><span>Price</span><strong>{formatUsd(selected?.usdPrice)}</strong></div>
@@ -573,7 +610,7 @@ export function TradingTerminalScreen() {
           <Segmented value={filter} onChange={setFilter} ariaLabel="Token feed filter" options={[{ value: "new", label: "New" }, { value: "moving", label: "Moving" }, { value: "liquid", label: "Liquid" }, { value: "pump", label: "Pump" }]} />
           <div className="terminal-feed__labels"><span>Token</span><span>Price / age</span><span>5m / vol</span></div>
           <div className="terminal-feed__body">
-            {!live ? <EmptyState icon={<Radio size={21} />} title="Mainnet feed paused" description="Select Solana Mainnet to load current Jupiter-indexed pools." /> : recent.isLoading ? <div className="terminal-loading"><LoaderCircle className="spin" size={18} /> Loading live pools…</div> : recent.error && !recent.data?.length ? <EmptyState icon={<AlertTriangle size={21} />} title="Provider unavailable" description={recent.error.message} action={<Button size="sm" onClick={() => void recent.refetch()}>Retry</Button>} /> : visibleTokens.length === 0 ? <EmptyState icon={<Search size={21} />} title="No matches" description="Change the filter or search a mint." /> : visibleTokens.map((token) => <TokenFeedRow key={token.id} token={token} active={token.id === selected?.id} disabled={settling} onSelect={() => setSelectedMint(token.id)} />)}
+            {!live ? <EmptyState icon={<Radio size={21} />} title="Mainnet feed paused" description="Select Solana Mainnet to load current Jupiter-indexed pools." /> : recent.isLoading ? <div className="terminal-loading"><LoaderCircle className="spin" size={18} /> Loading live pools…</div> : recent.error && !recent.data?.length ? <EmptyState icon={<AlertTriangle size={21} />} title="Provider unavailable" description={recent.error.message} action={<Button size="sm" onClick={() => void recent.refetch()}>Retry</Button>} /> : visibleTokens.length === 0 ? <EmptyState icon={<Search size={21} />} title="No matches" description="Change the filter or search a mint." /> : visibleTokens.map((token) => <TokenFeedRow key={token.id} token={token} active={token.id === selected?.id} disabled={settling} onSelect={() => selectToken(token.id)} />)}
           </div>
           <footer><span>Jupiter Tokens API</span><strong>{recent.error && recent.data?.length ? "cached · provider retrying" : recent.dataUpdatedAt ? `updated ${Math.max(0, Math.floor((Date.now() - recent.dataUpdatedAt) / 1_000))}s ago` : "not loaded"}</strong></footer>
         </aside>

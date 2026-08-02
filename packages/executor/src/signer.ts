@@ -9,6 +9,25 @@ const responseSchema = z.object({
   signature: z.string().min(1).max(256),
   wireTransaction: z.string().min(1).max(4_000_000),
 });
+const errorResponseSchema = z.object({
+  version: z.literal(1),
+  requestId: z.string().uuid(),
+  error: z.string().min(1).max(512),
+});
+const statusResponseSchema = z.object({
+  version: z.literal(1),
+  requestId: z.string().uuid(),
+  status: z.literal("ready"),
+  service: z.literal("sunder-policy-signer"),
+  publicKey: z.string().min(32).max(64),
+  networks: z.array(z.enum(["solana:devnet", "solana:mainnet"])).min(1).max(2),
+  policy: z.object({
+    maxPumpSpendLamports: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    maxTipLamports: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    maxComputeUnitLimit: z.number().int().positive(),
+    maxComputeUnitPriceMicroLamports: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+  }),
+});
 const MAX_RESPONSE_BYTES = 4_100_000;
 
 function abortError(): DOMException {
@@ -93,7 +112,10 @@ export class UnixSocketWalletAdapter implements WalletAdapter {
       manifest: transaction.instructions,
       unsignedPayload: transaction.unsignedPayload,
     }, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
-    const parsed = responseSchema.parse(await requestSocket(this.#path, request, signal));
+    const rawResponse = await requestSocket(this.#path, request, signal);
+    const failed = errorResponseSchema.safeParse(rawResponse);
+    if (failed.success && failed.data.requestId === requestId) throw new Error(`Signer policy rejected the transaction: ${failed.data.error}`);
+    const parsed = responseSchema.parse(rawResponse);
     if (parsed.requestId !== requestId) throw new Error("Signer response requestId mismatch.");
     validateSignedPayload(transaction, parsed.signature, parsed.wireTransaction);
     return Object.freeze({
@@ -103,4 +125,35 @@ export class UnixSocketWalletAdapter implements WalletAdapter {
       signedAt: Date.now(),
     });
   }
+}
+
+export interface SignerStatus {
+  readonly publicKey: string;
+  readonly networks: readonly ("solana:devnet" | "solana:mainnet")[];
+  readonly policy: Readonly<{
+    maxPumpSpendLamports: bigint;
+    maxTipLamports: bigint;
+    maxComputeUnitLimit: number;
+    maxComputeUnitPriceMicroLamports: bigint;
+  }>;
+}
+
+export async function querySignerStatus(path: string, signal?: AbortSignal): Promise<SignerStatus> {
+  const requestId = randomUUID();
+  const response = statusResponseSchema.parse(await requestSocket(path, JSON.stringify({
+    version: 1,
+    requestId,
+    method: "status",
+  }), signal));
+  if (response.requestId !== requestId) throw new Error("Signer status response requestId mismatch.");
+  return Object.freeze({
+    publicKey: response.publicKey,
+    networks: Object.freeze([...response.networks]),
+    policy: Object.freeze({
+      maxPumpSpendLamports: BigInt(response.policy.maxPumpSpendLamports),
+      maxTipLamports: BigInt(response.policy.maxTipLamports),
+      maxComputeUnitLimit: response.policy.maxComputeUnitLimit,
+      maxComputeUnitPriceMicroLamports: BigInt(response.policy.maxComputeUnitPriceMicroLamports),
+    }),
+  });
 }

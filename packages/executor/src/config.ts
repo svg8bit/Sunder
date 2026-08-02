@@ -14,6 +14,15 @@ const optionalUrl = z.preprocess(
   }, { message: "Provider URLs must use HTTPS unless they target loopback." }).optional(),
 );
 
+const optionalWebsocketUrl = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.url().refine((value) => {
+    const url = new URL(value);
+    if (url.protocol === "wss:") return true;
+    return url.protocol === "ws:" && (url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "[::1]");
+  }, { message: "WebSocket provider URLs must use WSS unless they target loopback." }).optional(),
+);
+
 const optionalPath = z.preprocess(
   (value) => value === "" ? undefined : value,
   z.string().min(1).transform((value) => resolve(value)).optional(),
@@ -24,6 +33,13 @@ const booleanString = z.preprocess(
     ? undefined
     : typeof value === "boolean" ? String(value) : String(value).toLowerCase(),
   z.enum(["true", "false"]).transform((value) => value === "true").default(false),
+);
+
+const enabledByDefaultString = z.preprocess(
+  (value) => value === "" || value === undefined
+    ? undefined
+    : typeof value === "boolean" ? String(value) : String(value).toLowerCase(),
+  z.enum(["true", "false"]).transform((value) => value === "true").default(true),
 );
 
 const rawSchema = z.object({
@@ -39,8 +55,8 @@ const rawSchema = z.object({
   SUNDER_OPERATOR_CONFIRMATION: z.string().optional(),
   SUNDER_SOLANA_DEVNET_RPC_URL: optionalUrl,
   SUNDER_SOLANA_MAINNET_RPC_URL: optionalUrl,
-  SUNDER_SOLANA_DEVNET_WS_URL: optionalUrl,
-  SUNDER_SOLANA_MAINNET_WS_URL: optionalUrl,
+  SUNDER_SOLANA_DEVNET_WS_URL: optionalWebsocketUrl,
+  SUNDER_SOLANA_MAINNET_WS_URL: optionalWebsocketUrl,
   SUNDER_JITO_ENDPOINT: optionalUrl,
   SUNDER_JITO_AUTHORIZATION_FILE: optionalPath,
   SUNDER_NOZOMI_ENDPOINT: optionalUrl,
@@ -57,6 +73,10 @@ const rawSchema = z.object({
   SUNDER_EVM_MAINNET_MAX_SPEND_WEI: z.coerce.bigint().nonnegative().default(0n),
   SUNDER_EVM_MAINNET_MAX_DAILY_SPEND_WEI: z.coerce.bigint().nonnegative().default(0n),
   SUNDER_CONFIRMATION_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
+  SUNDER_LIVE_READINESS_CHECKS: enabledByDefaultString,
+  SUNDER_AUTOMATION_ENABLED: booleanString,
+  SUNDER_AUTOMATION_RULES_FILE: optionalPath,
+  SUNDER_AUTOMATION_MAX_QUEUE: z.coerce.number().int().min(1).max(1_000).default(100),
 });
 
 export interface ExecutorConfig {
@@ -82,6 +102,10 @@ export interface ExecutorConfig {
   readonly mainnetMaxSpendAtomic: Readonly<Partial<Record<"solana:mainnet" | "evm:mainnet", bigint>>>;
   readonly mainnetMaxDailySpendAtomic: Readonly<Partial<Record<"solana:mainnet" | "evm:mainnet", bigint>>>;
   readonly confirmationTimeoutMs: number;
+  readonly liveReadinessChecks: boolean;
+  readonly automationEnabled: boolean;
+  readonly automationRulesFile?: string;
+  readonly automationMaxQueue: number;
 }
 
 function assertNoKeyMaterial(environment: NodeJS.ProcessEnv): void {
@@ -153,6 +177,10 @@ export function parseExecutorConfig(environment: NodeJS.ProcessEnv = process.env
       "evm:mainnet": parsed.SUNDER_EVM_MAINNET_MAX_DAILY_SPEND_WEI,
     }),
     confirmationTimeoutMs: parsed.SUNDER_CONFIRMATION_TIMEOUT_MS,
+    liveReadinessChecks: parsed.NODE_ENV === "production" && parsed.SUNDER_LIVE_READINESS_CHECKS,
+    automationEnabled: parsed.SUNDER_AUTOMATION_ENABLED,
+    automationRulesFile: parsed.SUNDER_AUTOMATION_RULES_FILE,
+    automationMaxQueue: parsed.SUNDER_AUTOMATION_MAX_QUEUE,
   });
 }
 

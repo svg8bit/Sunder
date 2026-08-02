@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "enabled": false,
+  "network": "solana:mainnet",
+  "inputAmountLamports": "1000000",
+  "relayFanout": 2,
+  "feePolicy": {
+    "kind": "solana",
+    "computeUnitLimit": 250000,
+    "computeUnitPriceMicroLamports": "50000",
+    "tipLamports": "1000"
+  },
+  "rules": [
+    {
+      "id": "mainnet-acceptance-v1",
+      "name": "Bounded Pump launch acceptance",
+      "enabled": true,
+      "networks": ["solana:mainnet"],
+      "eventKinds": ["new_mint"],
+      "accounts": [],
+      "keywords": ["REPLACE_WITH_REQUIRED_TOKEN_KEYWORD"],
+      "requireMedia": false,
+      "allowTargets": [],
+      "denyTargets": [],
+      "maxSpendAtomic": "1000000",
+      "maxDailySpendAtomic": "5000000",
+      "maxSlippageBps": 500,
+      "maxPriceImpactBps": 2500,
+      "cooldownMs": 0,
+      "maxAttempts": 2,
+      "maxConfirmedExecutions": 1
+    }
+  ]
+}

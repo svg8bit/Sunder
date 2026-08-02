@@ -58,9 +58,10 @@ function formatMarketCap(value: number): string {
 }
 
 function showRecentWindow(chart: IChartApi, candleCount: number): void {
+  const visibleBars = candleCount < 12 ? 18 : Math.min(72, Math.max(24, candleCount + 8));
   chart.timeScale().setVisibleLogicalRange({
-    from: Math.max(-72, candleCount - 72),
-    to: candleCount + 6,
+    from: Math.max(-6, candleCount - visibleBars),
+    to: candleCount + 3,
   });
 }
 
@@ -74,7 +75,24 @@ interface LiveCandlestickChartProps {
   readonly spotPriceUsd?: number;
 }
 
-type PumpAnchor = Readonly<{ instrumentId: string; factor: number; metric: "market-cap" | "usd" }>;
+export type PumpAnchor = Readonly<{ instrumentId: string; factor: number; metric: "market-cap" | "usd" }>;
+
+export function createPumpAnchor(
+  instrumentId: string,
+  pumpTrades: readonly Pick<PumpTrade, "priceSol">[],
+  marketCapUsd?: number,
+  spotPriceUsd?: number,
+): PumpAnchor | undefined {
+  const latest = pumpTrades.at(-1);
+  if (!latest || !finitePositive(latest.priceSol)) return undefined;
+  if (finitePositive(marketCapUsd ?? 0)) {
+    return Object.freeze({ instrumentId, factor: marketCapUsd! / latest.priceSol, metric: "market-cap" });
+  }
+  if (finitePositive(spotPriceUsd ?? 0)) {
+    return Object.freeze({ instrumentId, factor: spotPriceUsd! / latest.priceSol, metric: "usd" });
+  }
+  return undefined;
+}
 
 export function LiveCandlestickChart({ instrumentId, observations, trades, symbol, interval, marketCapUsd, spotPriceUsd }: LiveCandlestickChartProps) {
   const container = useRef<HTMLDivElement>(null);
@@ -85,20 +103,25 @@ export function LiveCandlestickChart({ instrumentId, observations, trades, symbo
     .filter((trade) => finitePositive(trade.priceSol))
     .sort((left, right) => left.timestamp - right.timestamp || left.slot - right.slot || left.signature.localeCompare(right.signature)), [trades]);
   const source = pumpTrades.length > 0 ? "pump" : "jupiter";
-  const pumpAnchor = useRef<PumpAnchor | undefined>(undefined);
-  if (pumpAnchor.current?.instrumentId !== instrumentId) pumpAnchor.current = undefined;
-  if (!pumpAnchor.current && pumpTrades[0]) {
-    if (finitePositive(marketCapUsd ?? 0)) pumpAnchor.current = Object.freeze({ instrumentId, factor: marketCapUsd! / pumpTrades[0].priceSol, metric: "market-cap" });
-    else if (finitePositive(spotPriceUsd ?? 0)) pumpAnchor.current = Object.freeze({ instrumentId, factor: spotPriceUsd! / pumpTrades[0].priceSol, metric: "usd" });
-  }
+  // Jupiter's token snapshot describes the current market, so calibrate it to
+  // the newest confirmed reserve price. Anchoring it to the oldest event shifts
+  // the whole scale whenever the token moved before the chart was mounted.
+  const anchorCandidate = useMemo(
+    () => createPumpAnchor(instrumentId, pumpTrades, marketCapUsd, spotPriceUsd),
+    [instrumentId, marketCapUsd, pumpTrades, spotPriceUsd],
+  );
+  const pumpAnchorRef = useRef<PumpAnchor | undefined>(undefined);
+  if (pumpAnchorRef.current?.instrumentId !== instrumentId) pumpAnchorRef.current = undefined;
+  if (!pumpAnchorRef.current && anchorCandidate) pumpAnchorRef.current = anchorCandidate;
+  const pumpAnchor = pumpAnchorRef.current;
   const impliedSupply = finitePositive(marketCapUsd ?? 0) && finitePositive(spotPriceUsd ?? 0) ? marketCapUsd! / spotPriceUsd! : undefined;
-  const metric: "market-cap" | "usd" | "sol" = source === "pump" ? pumpAnchor.current?.metric ?? "sol" : impliedSupply ? "market-cap" : "usd";
+  const metric: "market-cap" | "usd" | "sol" = source === "pump" ? pumpAnchor?.metric ?? "sol" : impliedSupply ? "market-cap" : "usd";
   const candles = useMemo(() => aggregateLiveCandles(
     source === "pump"
-      ? pumpTrades.map((trade) => ({ at: trade.timestamp, order: trade.slot, price: trade.priceSol * (pumpAnchor.current?.factor ?? 1), volume: Number(trade.solAmountLamports) / 1_000_000_000 }))
+      ? pumpTrades.map((trade) => ({ at: trade.timestamp, order: trade.slot, price: trade.priceSol * (pumpAnchor?.factor ?? 1), volume: Number(trade.solAmountLamports) / 1_000_000_000 }))
       : observations.map((point) => ({ at: point.at, price: point.price * (impliedSupply ?? 1) })),
     interval,
-  ), [impliedSupply, interval, observations, pumpTrades, source]);
+  ), [impliedSupply, interval, observations, pumpAnchor, pumpTrades, source]);
   const latestCandles = useRef(candles);
   latestCandles.current = candles;
   const hasFitted = useRef(false);
@@ -118,8 +141,8 @@ export function LiveCandlestickChart({ instrumentId, observations, trades, symbo
         },
         grid: { vertLines: { color: "#1a2026" }, horzLines: { color: "#1a2026" } },
         crosshair: { vertLine: { color: "#57616b", labelBackgroundColor: "#20262d" }, horzLine: { color: "#57616b", labelBackgroundColor: "#20262d" } },
-        rightPriceScale: { borderColor: "#232a31", minimumWidth: 64 },
-        timeScale: { borderColor: "#232a31", timeVisible: true, secondsVisible: interval < 60, rightOffset: 4, barSpacing: 9, minBarSpacing: 2 },
+        rightPriceScale: { autoScale: true, borderColor: "#232a31", minimumWidth: 72, scaleMargins: { top: 0.12, bottom: 0.18 } },
+        timeScale: { borderColor: "#232a31", timeVisible: true, secondsVisible: interval < 60, rightOffset: 3, barSpacing: 10, minBarSpacing: 4 },
         handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
         handleScroll: { horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true, vertTouchDrag: false },
       });
@@ -187,7 +210,7 @@ export function LiveCandlestickChart({ instrumentId, observations, trades, symbo
       </div>
       <div className="market-chart__canvas" ref={container} role="img" aria-label={`${symbol} live ${interval}-second candlestick chart built only from observed provider data`} />
       {candles.length === 0 ? <div className="market-chart__empty"><BarChart3 size={22} /><strong>Waiting for first live observation</strong><span>No historical candles are fabricated.</span></div> : null}
-      <figcaption>Live OHLC only: {source === "pump" ? `${pumpTrades.length} confirmed Pump reserve-price events${metric === "market-cap" ? "; market-cap scale anchored once to the current Jupiter index" : ""}` : `${observations.length} Jupiter price samples`}. Pan, zoom and crosshair are interactive.</figcaption>
+      <figcaption>Live OHLC only: {source === "pump" ? `${pumpTrades.length} confirmed Pump reserve-price events${metric === "market-cap" ? "; market-cap scale anchored once to the current Jupiter index" : ""}` : `${observations.length} Jupiter price samples`}. Pan, zoom and crosshair are interactive. <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a>.</figcaption>
     </figure>
   );
 }

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sunder Mainnet terminal comparison</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 20px; background: #080a0d; color: #e9edf2; font: 14px system-ui, sans-serif; }
+    h1 { margin: 0 0 16px; font-size: 20px; }
+    h2 { margin: 0 0 8px; color: #9ba6b2; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    .panel { min-width: 0; padding: 10px; border: 1px solid #2a3037; background: #0d1014; }
+    img { display: block; width: 100%; height: auto; border: 1px solid #222831; }
+    .mobile { margin-top: 20px; grid-template-columns: minmax(280px, 853px) minmax(280px, 390px); justify-content: center; }
+  </style>
+</head>
+<body>
+  <h1>Axiom reference and Sunder verified implementation</h1>
+  <section class="grid">
+    <article class="panel"><h2>Axiom terminal reference</h2><img src="/artifacts/qa/axiom-terminal-trade-reference.png" alt="Axiom terminal reference" /></article>
+    <article class="panel"><h2>Sunder terminal · live Pump history · draggable panels</h2><img src="/artifacts/qa/terminal-desktop-reset.png" alt="Sunder verified terminal" /></article>
+  </section>
+  <section class="grid mobile">
+    <article class="panel"><h2>Accepted Sunder mobile source</h2><img src="/docs/design/sunder-mobile-source.png" alt="Accepted Sunder mobile source" /></article>
+    <article class="panel"><h2>Sunder Mainnet sniper mobile · 390 × 844</h2><img src="/artifacts/qa/sniper-mobile-local.png" alt="Sunder verified mobile Mainnet sniper" /></article>
+  </section>
+</body>
+</html>

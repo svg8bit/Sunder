@@ -3,6 +3,7 @@ import { open } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { z } from "zod";
 import { toSerializableAudit, type ChainNetworkId, type ExecutionRequest } from "../../sniper-engine/src/index.js";
+import { startAutomationController } from "./automation.js";
 import { parseExecutorConfig } from "./config.js";
 import { evaluateReadiness, type ExecutorReadiness } from "./readiness.js";
 import { createExecutorRuntime, ExecutorRuntimeError, type ExecutorRuntime } from "./runtime.js";
@@ -175,6 +176,7 @@ export async function startExecutorServer(environment: NodeJS.ProcessEnv = proce
   const evaluate = options.evaluate ?? evaluateReadiness;
   const initialReadiness = await evaluate(config);
   const runtime = await (options.createRuntime ?? createExecutorRuntime)(config, initialReadiness);
+  const automation = await startAutomationController(config, runtime, initialReadiness, evaluate);
   const scheduler = new AccountScheduler();
   const startedAt = Date.now();
 
@@ -197,6 +199,9 @@ export async function startExecutorServer(environment: NodeJS.ProcessEnv = proce
         const network = url.searchParams.get("network") as ChainNetworkId | null;
         if (network && !config.networks.includes(network)) return json(response, 400, { error: "unsupported-network" });
         return json(response, 200, { relays: runtime.relayHealth(network ?? undefined) });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/automation") {
+        return json(response, 200, automation.status());
       }
       if (request.method === "GET" && url.pathname === "/v1/audit") {
         const executionId = url.searchParams.get("executionId") ?? undefined;
@@ -240,15 +245,20 @@ export async function startExecutorServer(environment: NodeJS.ProcessEnv = proce
   const close = () => {
     if (closePromise) return closePromise;
     closePromise = new Promise<void>((resolve, reject) => {
-      if (!server.listening) return resolve();
+      if (!server.listening) {
+        void automation.close().then(resolve, reject);
+        return;
+      }
       server.close((error) => {
-        if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") reject(error);
-        else resolve();
+        void automation.close().then(() => {
+          if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") reject(error);
+          else resolve();
+        }, reject);
       });
     });
     return closePromise;
   };
-  return Object.freeze({ server, config, runtime, close });
+  return Object.freeze({ server, config, runtime, automation, close });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

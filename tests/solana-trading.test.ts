@@ -9,12 +9,35 @@ import {
   type JupiterBuildResponse,
   type PreparedJupiterSwap,
 } from "../src/solana/jupiter";
-import { decodePumpTradeLog, fetchRecentTokens, normalizePumpTradeEvent, PUMP_PROGRAM_ADDRESS, safeTokenIcon, searchTokenInformation } from "../src/solana/market";
+import { decodePumpTradeLog, fetchPumpTradeHistory, fetchRecentTokens, normalizePumpTradeEvent, PUMP_PROGRAM_ADDRESS, safeTokenIcon, searchTokenInformation } from "../src/solana/market";
 import { deriveTrackedPosition, parseStoredTrades, type ConfirmedTradeRecord } from "../src/state/trading";
 
 const tokenMint = "ToKeN111111111111111111111111111111111111111";
 const wallet = "WaLLeT11111111111111111111111111111111111111";
 const program = "11111111111111111111111111111111";
+
+function pumpTradeLog(mint = WRAPPED_SOL_MINT): string {
+  const data = new Uint8Array(225);
+  data.set([189, 219, 127, 211, 78, 230, 97, 238]);
+  const view = new DataView(data.buffer);
+  let cursor = 8;
+  const key = (value: string) => { data.set(getBase58Encoder().encode(value), cursor); cursor += 32; };
+  const u64 = (value: bigint) => { view.setBigUint64(cursor, value, true); cursor += 8; };
+  key(mint);
+  u64(200_000_000n);
+  u64(1_000_000n);
+  data[cursor++] = 1;
+  key(PUMP_PROGRAM_ADDRESS);
+  view.setBigInt64(cursor, 1_700_000_000n, true); cursor += 8;
+  u64(3_000_000_000n); u64(1_000_000_000_000n); u64(3n); u64(4n);
+  key(PUMP_PROGRAM_ADDRESS);
+  u64(100n);
+  u64(2_000_000n);
+  key(PUMP_PROGRAM_ADDRESS);
+  u64(25n);
+  u64(500_000n);
+  return `Program data: ${Buffer.from(data).toString("base64")}`;
+}
 
 function buildManifest(): JupiterBuildResponse {
   return {
@@ -258,28 +281,23 @@ describe("live token and Pump event validation", () => {
   });
 
   it("decodes the current official Pump TradeEvent prefix from a confirmed program-data log", () => {
-    const data = new Uint8Array(225);
-    data.set([189, 219, 127, 211, 78, 230, 97, 238]);
-    const view = new DataView(data.buffer);
-    let cursor = 8;
-    const key = (value: string) => { data.set(getBase58Encoder().encode(value), cursor); cursor += 32; };
-    const u64 = (value: bigint) => { view.setBigUint64(cursor, value, true); cursor += 8; };
-    key(WRAPPED_SOL_MINT);
-    u64(200_000_000n);
-    u64(1_000_000n);
-    data[cursor++] = 1;
-    key(PUMP_PROGRAM_ADDRESS);
-    view.setBigInt64(cursor, 1_700_000_000n, true); cursor += 8;
-    u64(3_000_000_000n); u64(1_000_000_000_000n); u64(3n); u64(4n);
-    key(PUMP_PROGRAM_ADDRESS);
-    u64(100n);
-    u64(2_000_000n);
-    key(PUMP_PROGRAM_ADDRESS);
-    u64(25n);
-    u64(500_000n);
-    const decoded = decodePumpTradeLog(`Program data: ${Buffer.from(data).toString("base64")}`, { signature: "z".repeat(88), slot: 101, decimals: 6 });
+    const decoded = decodePumpTradeLog(pumpTradeLog(), { signature: "z".repeat(88), slot: 101, decimals: 6 });
     expect(decoded).toMatchObject({ mint: WRAPPED_SOL_MINT, user: PUMP_PROGRAM_ADDRESS, side: "buy", feeBasisPoints: 100, creatorFeeBasisPoints: 25, priceSol: 0.000003 });
     expect(decodePumpTradeLog("Program log: not an event", { signature: "z".repeat(88), slot: 101, decimals: 6 })).toBeUndefined();
+  });
+
+  it("backfills bounded confirmed Pump transactions for real historical candles", async () => {
+    const signature = "z".repeat(88);
+    const fetcherMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { readonly method: string };
+      if (request.method === "getSignaturesForAddress") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [{ signature, slot: 101, err: null }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { slot: 101, meta: { logMessages: [pumpTradeLog()] } } }), { status: 200 });
+    });
+    const history = await fetchPumpTradeHistory({ mint: WRAPPED_SOL_MINT, decimals: 6, rpcUrl: "https://rpc.example", fetcher: fetcherMock as unknown as typeof fetch });
+    expect(history).toMatchObject([{ signature, slot: 101, priceSol: 0.000003 }]);
+    expect(fetcherMock).toHaveBeenCalledTimes(2);
   });
 });
 

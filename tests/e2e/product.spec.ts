@@ -131,7 +131,9 @@ test("all product routes are real application screens", async ({ page }) => {
   for (const [route, heading] of routes) {
     await page.goto(`/${route}`);
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
-    await expect(page).toHaveURL(new RegExp(`/${route}$`));
+    await expect(page).toHaveURL(route === "swap"
+      ? /\/meme\/[1-9A-HJ-NP-Za-km-z]{32,44}\?chain=sol$/
+      : new RegExp(`/${route}$`));
   }
 });
 
@@ -209,7 +211,7 @@ test("terminal panels drag, persist, and expose live candlestick controls", asyn
   const handle = trade.locator(".terminal-floating-panel__handle");
   await expect(trade).toBeVisible();
   await expect(wallets).toBeVisible();
-  await expect(page.getByRole("button", { name: "1s" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "1s", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Charting by TradingView" })).toBeVisible();
   await expect(page.getByLabel("Slippage percent")).toHaveValue("1");
 

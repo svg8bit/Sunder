@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregateLiveCandles } from "../src/components/live-candlestick-chart";
+import { aggregateLiveCandles, createPumpAnchor } from "../src/components/live-candlestick-chart";
 import { mergeConfirmedPumpTrade, type PumpTrade } from "../src/solana/market";
 
 function pumpTrade(signature: string, slot: number, timestamp: number): PumpTrade {
@@ -57,5 +57,12 @@ describe("live candlestick aggregation", () => {
     const current = [pumpTrade("new", 102, 10_200), pumpTrade("old", 101, 10_100)];
     expect(mergeConfirmedPumpTrade(current, pumpTrade("late", 100, 10_000))).toBe(current);
     expect(mergeConfirmedPumpTrade(current, pumpTrade("next", 103, 10_300)).map((trade) => trade.slot)).toEqual([103, 102, 101]);
+  });
+
+  it("anchors the current market snapshot to the newest confirmed reserve price", () => {
+    const anchor = createPumpAnchor("mint", [{ priceSol: 2 }, { priceSol: 4 }], 12_000, 0.000012);
+    expect(anchor).toEqual({ instrumentId: "mint", factor: 3_000, metric: "market-cap" });
+    expect(2 * anchor!.factor).toBe(6_000);
+    expect(4 * anchor!.factor).toBe(12_000);
   });
 });

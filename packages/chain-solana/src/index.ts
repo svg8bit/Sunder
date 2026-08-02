@@ -33,6 +33,8 @@ import {
   type WalletAdapter,
 } from "../../sniper-engine/src/index.js";
 
+export { PumpProgramEventSource } from "./pump-event-source.js";
+
 export const PUMP_PROGRAM_ADDRESS = PUMP_PROGRAM_ID.toBase58();
 export const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
 

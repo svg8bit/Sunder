@@ -10,6 +10,9 @@
 - Corrected chart evidence: `artifacts/qa/terminal-chart-reserve-mcap-final.png` (`617 x 453`).
 - Export warning state: `artifacts/qa/terminal-wallet-export-warning-final.png` (`1280 x 633`); no private key is visible in the artifact.
 - Mobile wallet implementation: `artifacts/qa/terminal-wallet-embedded-mobile-final.png` (`390 x 844`) captured at DPR 1.
+- Current Mainnet terminal: `artifacts/qa/terminal-desktop-reset.png` (`1920 x 900`) and `artifacts/qa/terminal-mobile-local.png` (`390 x 844`, full page).
+- Current Mainnet Sniper: `artifacts/qa/sniper-mobile-local.png` (`390 x 844`, full page).
+- Required combined visual input: `artifacts/qa/terminal-mainnet-side-by-side.png`, generated from `artifacts/qa/terminal-mainnet-comparison.html` and inspected as one image.
 
 The Axiom captures define component anatomy, density and trading conventions; Sunder retains its own brand, zero-platform-fee disclosure, confirmation semantics and security boundary.
 
@@ -22,6 +25,8 @@ There are no remaining actionable P0, P1 or P2 findings.
 - Colors and visual tokens: the source's near-black surfaces, thin dividers and restrained status color treatment are preserved with Sunder orange, mint and red semantic tokens.
 - Image and icon fidelity: token/provider images remain real remote assets; wallet, key, explorer and delete actions use the existing icon library. No placeholder or handcrafted SVG replaces a visible source asset.
 - Copy and content: `Create wallet` is immediate; each row has public address, confirmed SOL balance, signer state, export, explorer and delete actions. Security copy states browser-local encryption and backup risk without pretending cross-device custody.
+- URL identity: selecting a token now changes the canonical route to `/meme/<mint>?chain=sol`; direct loads restore the same token and the strip exposes a copy-link action.
+- Historical chart density: the terminal backfills up to 48 confirmed mint transactions through bounded Solana RPC requests, decodes official Pump `TradeEvent` logs, merges/deduplicates them with the live WebSocket stream, and caches the result for 60 seconds. No candle is synthesized for an interval without a confirmed trade.
 
 ## Comparison history
 
@@ -38,6 +43,15 @@ There are no remaining actionable P0, P1 or P2 findings.
 - Two wallets were created in the browser flow. Both rows appeared, both were selected, Buy/Sell reported two signers, and the History tab contained two public `Embedded wallet created` entries.
 - Export was exercised through the warning dialog. The explicit Reveal action produced an 88-character Base58 value and Copy/Download controls; the value was neither printed nor captured. A unit test restored the matching address and produced a 64-byte transaction signature.
 
+### Iteration 3 — Mainnet sniper and chart follow-up passed
+
+- The earlier chart calibration was still recalculated whenever a new trade or Jupiter snapshot arrived. That could shift every historical candle vertically even though the underlying reserve-price ratios had not changed. The market-cap calibration is now frozen once per mint and resets only when the instrument changes.
+- The chart now opens with bounded confirmed Pump history instead of showing only trades observed after page load. The newest canonical reserve event anchors the initial market-cap scale, same-slot observations are ordered by slot/signature, and all intervals retain real OHLC geometry.
+- TradingView Lightweight Charts remains the renderer, with required visible TradingView attribution. It is the open-source chart renderer, not TradingView's proprietary hosted datafeed; Solana RPC/Pump events remain the data truth.
+- A desktop mouse drag moved the Trade panel from its default position and persisted `{x,y,z}` in `sunder:terminal-floating-panels:v1`; Reset panels restored the accepted composition. Wallets remained independently draggable.
+- Browser wallet QA created `Sunder Wallet 1` without a dialog, inserted and selected it immediately, then reloaded the permanent token URL. The signer row, selection and IndexedDB vault (`sunder-solana-embedded-vault`) persisted; no key material was printed or captured.
+- Solana Sniper now renders the provisioned isolated executor address and honest `Funding + confirmation` state. Jito is displayed as configured only when its public status endpoint is present at build time.
+
 ## Interaction and browser evidence
 
 - Browser: `agent-browser` against the loopback Vite application.
@@ -47,6 +61,9 @@ There are no remaining actionable P0, P1 or P2 findings.
 - Mobile result: `walletRows=1`, `selected=1`, `dialog=false`, `scrollWidth=innerWidth=390`.
 - Fresh post-HMR desktop and mobile console collections contained no warning or error entries.
 - No funded Mainnet transaction was submitted during visual QA. Success remains impossible before canonical RPC confirmation.
+- Current desktop viewport passed `scrollWidth=clientWidth=1920`; current mobile terminal passed `scrollWidth=clientWidth=390`.
+- Current permanent route observed in Chromium: `/meme/HCPtSBVKbV71UmE3ggccV3uNwapthUMMf63o7qGYpump?chain=sol`.
+- Current chart evidence observed `53` confirmed Pump events in the first pass and `160` after the bounded history/live merge; the axis used `$K` market-cap labels rather than scientific notation.
 
 ## Focused comparison conclusion
 
@@ -55,7 +72,7 @@ The focused side-by-side comparison shows the required Axiom anatomy: tab strip,
 ## Accepted P3 differences
 
 - Sunder does not reproduce Axiom branding, server custody, private-key import, proprietary historical indexer or unrelated navigation.
-- New Pump bonding-curve history is accumulated from confirmed live events in the current session; a project-scoped historical OHLC provider can deepen history later without changing the chart.
+- Axiom's proprietary historical indexer is deeper than the bounded public-RPC backfill. Sunder intentionally caps each token selection at 48 confirmed transaction fetches and caches the result to preserve free-provider limits; a project-scoped indexer can extend depth without changing the chart model.
 - Embedded wallets persist only in the current browser profile. Users must export a backup before clearing site data; no cross-device account backend is claimed.
 
 final result: passed

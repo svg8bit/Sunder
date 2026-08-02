@@ -131,6 +131,14 @@ export function mergeConfirmedPumpTrade(current: readonly PumpTrade[], trade: Pu
     .slice(0, 160));
 }
 
+export function mergePumpTradeHistory(current: readonly PumpTrade[], history: readonly PumpTrade[]): readonly PumpTrade[] {
+  const bySignature = new Map<string, PumpTrade>();
+  for (const trade of [...current, ...history]) bySignature.set(trade.signature, trade);
+  return Object.freeze([...bySignature.values()]
+    .sort((left, right) => right.slot - left.slot || right.timestamp - left.timestamp || right.signature.localeCompare(left.signature))
+    .slice(0, 160));
+}
+
 function recordValue(record: Record<string, unknown>, camel: string, snake: string): unknown {
   return record[camel] ?? record[snake];
 }
@@ -245,6 +253,84 @@ export function decodePumpTradeLog(
   const creatorFeeBasisPoints = u64();
   const creatorFee = u64();
   return normalizePumpTradeEvent({ mint, solAmount, tokenAmount, isBuy, user, timestamp, virtualSolReserves, virtualTokenReserves, feeBasisPoints, fee, creatorFeeBasisPoints, creatorFee }, context);
+}
+
+const signatureHistorySchema = z.object({
+  result: z.array(z.object({ signature: z.string().min(64).max(128), slot: z.number().int().nonnegative(), err: z.unknown().nullable().optional() })).max(160),
+  error: z.unknown().optional(),
+});
+
+const transactionHistorySchema = z.object({
+  result: z.object({
+    slot: z.number().int().nonnegative(),
+    meta: z.object({ logMessages: z.array(z.string().max(16_384)).max(4_096).nullable() }).nullable(),
+  }).nullable(),
+  error: z.unknown().optional(),
+});
+
+async function rpcRequest(
+  rpcUrl: string,
+  method: string,
+  params: readonly unknown[],
+  signal?: AbortSignal,
+  fetcher: typeof fetch = fetch,
+): Promise<unknown> {
+  const response = await fetcher(rpcUrl, {
+    method: "POST",
+    credentials: "omit",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: `${method}:${Math.random().toString(36).slice(2)}`, method, params }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`Solana RPC returned HTTP ${response.status}.`);
+  return response.json();
+}
+
+export async function fetchPumpTradeHistory(input: {
+  readonly mint: string;
+  readonly decimals: number;
+  readonly rpcUrl: string;
+  readonly limit?: number;
+  readonly signal?: AbortSignal;
+  readonly fetcher?: typeof fetch;
+}): Promise<readonly PumpTrade[]> {
+  const limit = Math.min(120, Math.max(1, input.limit ?? 72));
+  const signaturesPayload = signatureHistorySchema.parse(await rpcRequest(
+    input.rpcUrl,
+    "getSignaturesForAddress",
+    [input.mint, { commitment: "confirmed", limit }],
+    input.signal,
+    input.fetcher,
+  ));
+  if (signaturesPayload.error) throw new Error("Solana RPC rejected Pump signature history.");
+  const signatures = signaturesPayload.result.filter((entry) => entry.err === null || entry.err === undefined);
+  const trades: PumpTrade[] = [];
+  const concurrency = 12;
+  for (let offset = 0; offset < signatures.length; offset += concurrency) {
+    const chunk = signatures.slice(offset, offset + concurrency);
+    const responses = await Promise.allSettled(chunk.map(async (entry) => {
+      const parsed = transactionHistorySchema.parse(await rpcRequest(
+        input.rpcUrl,
+        "getTransaction",
+        [entry.signature, { commitment: "confirmed", encoding: "json", maxSupportedTransactionVersion: 0 }],
+        input.signal,
+        input.fetcher,
+      ));
+      if (parsed.error || !parsed.result?.meta?.logMessages) return [];
+      return parsed.result.meta.logMessages.flatMap((log) => {
+        try {
+          const trade = decodePumpTradeLog(log, { signature: entry.signature, slot: parsed.result!.slot, decimals: input.decimals });
+          return trade?.mint === input.mint ? [trade] : [];
+        } catch {
+          return [];
+        }
+      });
+    }));
+    for (const response of responses) {
+      if (response.status === "fulfilled") trades.push(...response.value);
+    }
+  }
+  return mergePumpTradeHistory([], trades);
 }
 
 const logsNotificationSchema = z.object({
