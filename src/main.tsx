@@ -8,6 +8,7 @@ import { App } from "./App";
 import { evmConfig } from "./evm/config";
 import { solanaClientFor } from "./solana/client";
 import { NetworkProvider, useNetwork } from "./state/network";
+import { SolanaWalletRegistryProvider } from "./state/solana-wallet-registry";
 import { WorkspaceProvider } from "./state/workspace";
 import { TradingProvider } from "./state/trading";
 import "./styles.css";
@@ -28,9 +29,15 @@ function ChainProviders() {
   const { network } = useNetwork();
   const client = solanaClientFor(network);
   return (
-    <SolanaProvider key={network.startsWith("solana:") ? network : "solana:standby"} client={client}>
-      <App />
-      <Toaster position="bottom-right" richColors closeButton />
+    <SolanaProvider
+      key={network.startsWith("solana:") ? network : "solana:standby"}
+      client={client}
+      walletPersistence={{ autoConnect: true, storageKey: "sunder:solana-wallet:v1" }}
+    >
+      <SolanaWalletRegistryProvider>
+        <App />
+        <Toaster position="bottom-right" richColors closeButton />
+      </SolanaWalletRegistryProvider>
     </SolanaProvider>
   );
 }
@@ -38,7 +45,7 @@ function ChainProviders() {
 createRoot(root).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <WagmiProvider config={evmConfig}>
+      <WagmiProvider config={evmConfig} reconnectOnMount>
         <NetworkProvider>
           <WorkspaceProvider>
             <TradingProvider>

@@ -1,4 +1,4 @@
-import { createConfig, http, type CreateConnectorFn } from "wagmi";
+import { createConfig, createStorage, http, type CreateConnectorFn } from "wagmi";
 import { injected, walletConnect } from "wagmi/connectors";
 import { mainnet, sepolia } from "wagmi/chains";
 
@@ -27,6 +27,10 @@ export const evmConfig = createConfig({
   chains: [mainnet, sepolia],
   connectors,
   multiInjectedProviderDiscovery: true,
+  storage: createStorage({
+    key: "sunder:evm-wallet:v1",
+    storage: typeof window === "undefined" ? undefined : window.localStorage,
+  }),
   transports: {
     [mainnet.id]: http(mainnetRpc || undefined),
     [sepolia.id]: http(sepoliaRpc || undefined),

@@ -27,8 +27,8 @@ const STORAGE_KEY = "sunder:network-selection:v1";
 function selection(family: "solana" | "evm", network?: "solana:devnet" | "solana:mainnet" | "evm:sepolia" | "evm:mainnet") {
   const value = {
     family,
-    solana: network?.startsWith("solana:") ? network : "solana:devnet",
-    evm: network?.startsWith("evm:") ? network : "evm:sepolia",
+    solana: network?.startsWith("solana:") ? network : "solana:mainnet",
+    evm: network?.startsWith("evm:") ? network : "evm:mainnet",
   };
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
 }
@@ -57,9 +57,9 @@ describe("dual-chain application shell", () => {
     await user.click(evm);
     expect(evm).toHaveAttribute("aria-pressed", "true");
     const network = screen.getByRole("combobox", { name: "Network" });
-    expect(network).toHaveValue("evm:sepolia");
+    expect(network).toHaveValue("evm:mainnet");
     await user.selectOptions(network, "evm:mainnet");
-    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ family: "evm", evm: "evm:mainnet", solana: "solana:devnet" });
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ family: "evm", evm: "evm:mainnet", solana: "solana:mainnet" });
   });
 
   it("removes the closed drawer from focus and accessibility navigation", async () => {
@@ -86,10 +86,10 @@ describe("dual-chain application shell", () => {
     expect(screen.getByRole("button", { name: "Deploy to Mainnet" })).toBeDisabled();
     expect(screen.getByText("Funded Mainnet locked")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "EVM" }));
-    expect(network).toHaveValue("evm:sepolia");
+    expect(network).toHaveValue("evm:mainnet");
     await user.click(screen.getByRole("button", { name: "SOL" }));
     expect(network).toHaveValue("solana:mainnet");
-    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ family: "solana", solana: "solana:mainnet", evm: "evm:sepolia" });
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ family: "solana", solana: "solana:mainnet", evm: "evm:mainnet" });
   });
 
   it("resets Sniper address, fee units, and relay defaults when the chain family changes", async () => {

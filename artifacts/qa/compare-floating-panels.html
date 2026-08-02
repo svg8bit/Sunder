@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sunder floating terminal comparison</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 3816px; height: 832px; margin: 0; overflow: hidden; background: #000; }
+      main { display: grid; width: 3816px; height: 832px; grid-template-columns: 1908px 1908px; }
+      figure { position: relative; width: 1908px; height: 832px; margin: 0; overflow: hidden; }
+      img { display: block; width: 1908px; height: 832px; object-fit: fill; }
+      figcaption { position: absolute; z-index: 1; top: 8px; left: 8px; padding: 5px 8px; border: 1px solid #666; background: rgba(0, 0, 0, .82); color: #fff; font: 13px system-ui; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <figure><figcaption>Source · accepted Sunder terminal</figcaption><img src="./sunder-terminal-before-floating-panels.png" alt="Accepted Sunder terminal before panel replacement" /></figure>
+      <figure><figcaption>Implementation · live candles + movable multi-wallet trade panels</figcaption><img src="./terminal-desktop-multiwallet-live-final.png" alt="Sunder terminal with live candles and floating multi-wallet panels" /></figure>
+    </main>
+  </body>
+</html>

@@ -1,16 +1,50 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { SOLANA_MAINNET_WS_URL } from "./client";
-import { fetchRecentTokens, subscribePumpTrades, type PumpTrade } from "./market";
+import { fetchRecentTokens, parseTokenInformationList, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
+
+const RECENT_CACHE_KEY = "sunder:solana-recent-tokens:v1";
+const RECENT_CACHE_MAX_AGE_MS = 120_000;
+
+interface RecentTokenCache {
+  readonly at: number;
+  readonly tokens: readonly TokenInformation[];
+}
+
+function readRecentTokenCache(): RecentTokenCache | undefined {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(RECENT_CACHE_KEY) ?? "null") as { readonly at?: unknown; readonly tokens?: unknown } | null;
+    if (!value || typeof value.at !== "number" || !Number.isFinite(value.at) || Date.now() - value.at > RECENT_CACHE_MAX_AGE_MS) return undefined;
+    return { at: value.at, tokens: parseTokenInformationList(value.tokens) };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeRecentTokenCache(tokens: readonly TokenInformation[]): void {
+  try {
+    window.localStorage.setItem(RECENT_CACHE_KEY, JSON.stringify({ at: Date.now(), tokens: tokens.slice(0, 40) }));
+  } catch {
+    // Storage policy and quota failures must not interrupt the live feed.
+  }
+}
 
 export function useRecentTokens(enabled: boolean) {
+  const [cached] = useState(readRecentTokenCache);
   return useQuery({
     queryKey: ["jupiter", "tokens", "recent"],
-    queryFn: ({ signal }) => fetchRecentTokens(signal),
+    queryFn: async ({ signal }) => {
+      const tokens = await fetchRecentTokens(signal);
+      writeRecentTokenCache(tokens);
+      return tokens;
+    },
     enabled,
+    initialData: cached?.tokens,
+    initialDataUpdatedAt: cached?.at,
     refetchInterval: enabled ? 8_000 : false,
     staleTime: 4_000,
-    retry: 1,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(3_000, 500 * 2 ** attempt),
   });
 }
 

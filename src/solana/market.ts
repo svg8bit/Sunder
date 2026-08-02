@@ -54,24 +54,35 @@ const tokenInformationSchema = z.object({
 export type MarketStats = z.infer<typeof marketStatsSchema>;
 export type TokenInformation = z.infer<typeof tokenInformationSchema>;
 
-async function tokenApi(path: string, signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<readonly TokenInformation[]> {
-  const response = await fetcher(`${JUPITER_TOKENS_API}${path}`, {
-    method: "GET",
-    credentials: "omit",
-    headers: { accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw new Error(`Jupiter Tokens API returned HTTP ${response.status}.`);
-  }
-  const payload = z.array(z.unknown()).max(500).safeParse(await response.json());
+export function parseTokenInformationList(value: unknown): readonly TokenInformation[] {
+  const payload = z.array(z.unknown()).max(500).safeParse(value);
   if (!payload.success) throw new Error("Jupiter Tokens API returned an invalid token payload.");
-  const tokens = payload.data.flatMap((value) => {
-    const parsed = tokenInformationSchema.safeParse(value);
+  const tokens = payload.data.flatMap((candidate) => {
+    const parsed = tokenInformationSchema.safeParse(candidate);
     return parsed.success ? [Object.freeze(parsed.data)] : [];
   });
   if (payload.data.length > 0 && tokens.length === 0) throw new Error("Jupiter Tokens API did not return any valid tokens.");
   return Object.freeze(tokens);
+}
+
+async function tokenApi(path: string, signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<readonly TokenInformation[]> {
+  const request = async (url: string) => {
+    const response = await fetcher(url, {
+      method: "GET",
+      credentials: "omit",
+      headers: { accept: "application/json" },
+      signal,
+    });
+    if (!response.ok) throw new Error(`Jupiter Tokens API returned HTTP ${response.status}.`);
+    return parseTokenInformationList(await response.json());
+  };
+  if (path !== "/recent" || !import.meta.env.PROD) return request(`${JUPITER_TOKENS_API}${path}`);
+  try {
+    return await request("/api/market/recent");
+  } catch (proxyError) {
+    if (signal?.aborted) throw proxyError;
+    return request(`${JUPITER_TOKENS_API}${path}`);
+  }
 }
 
 export function fetchRecentTokens(signal?: AbortSignal, fetcher?: typeof fetch): Promise<readonly TokenInformation[]> {

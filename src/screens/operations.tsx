@@ -32,7 +32,7 @@ import {
   WalletCards,
   Zap,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { isAddress, isHex, TransactionReceiptNotFoundError, type Hex } from "viem";
 import { usePublicClient } from "wagmi";
@@ -42,7 +42,9 @@ import safeRegex from "safe-regex2";
 import { Badge, Button, EmptyState, Field, Input, Metric, Modal, Panel, Segmented, Select, Toggle } from "../components/ui";
 import type { RouteId } from "../components/shell";
 import { useNetwork } from "../state/network";
+import { useSolanaWalletRegistry } from "../state/solana-wallet-registry";
 import { useWorkspace, type WatchWallet } from "../state/workspace";
+import { openWalletControl } from "../wallets/control-event";
 
 function ScreenHeading({ eyebrow, title, description, actions }: { readonly eyebrow: string; readonly title: string; readonly description: string; readonly actions?: React.ReactNode }) {
   return <div className="screen-heading"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{description}</p></div>{actions ? <div className="heading-actions">{actions}</div> : null}</div>;
@@ -50,6 +52,13 @@ function ScreenHeading({ eyebrow, title, description, actions }: { readonly eyeb
 
 function formatTime(timestamp: number): string {
   return new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", second: "2-digit", day: "2-digit", month: "short" }).format(timestamp);
+}
+
+function formatSolBalance(lamports: bigint | undefined): string {
+  if (lamports === undefined) return "Loading…";
+  const whole = lamports / 1_000_000_000n;
+  const fraction = (lamports % 1_000_000_000n).toString().padStart(9, "0").slice(0, 4);
+  return `${whole}.${fraction} SOL`;
 }
 
 export function DashboardScreen({ navigate }: { readonly navigate: (route: RouteId) => void }) {
@@ -109,12 +118,31 @@ function walletAddressValid(family: "solana" | "evm", address: string): boolean 
 
 export function WalletsScreen() {
   const { family, network, chain, explorerAddressUrl } = useNetwork();
+  const solanaClient = useSolanaClient();
+  const signerRegistry = useSolanaWalletRegistry();
   const workspace = useWorkspace();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [address, setAddress] = useState("");
   const [role, setRole] = useState<WatchWallet["role"]>("Watch only");
   const visible = workspace.wallets.filter((wallet) => wallet.network === network);
+  const [signerBalances, setSignerBalances] = useState<Readonly<Record<string, bigint>>>({});
+  const signerKey = signerRegistry.wallets.map((entry) => `${entry.id}:${entry.session.account.address.toString()}`).join("|");
+  const walletHistory = useMemo(() => workspace.audit.filter((entry) => entry.network === network && (entry.category === "wallet" || entry.category === "execution")).slice(0, 20), [network, workspace.audit]);
+  useEffect(() => {
+    if (family !== "solana" || signerRegistry.wallets.length === 0) { setSignerBalances({}); return; }
+    const controller = new AbortController();
+    const refresh = async () => {
+      const settled = await Promise.allSettled(signerRegistry.wallets.map(async (entry) => {
+        const balance = await solanaClient.runtime.rpc.getBalance(entry.session.account.address, { commitment: "confirmed" }).send({ abortSignal: controller.signal });
+        return [entry.id, balance.value] as const;
+      }));
+      if (!controller.signal.aborted) setSignerBalances(Object.freeze(Object.fromEntries(settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []))));
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 10_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [family, signerKey, signerRegistry.wallets, solanaClient]);
   const add = () => {
     if (!name.trim() || !walletAddressValid(family, address.trim())) { toast.error(`Enter a name and valid ${family === "solana" ? "Solana" : "EVM"} address.`); return; }
     workspace.addWallet({ name: name.trim(), address: address.trim(), role, network });
@@ -123,11 +151,20 @@ export function WalletsScreen() {
   };
   return (
     <div className="screen">
-      <ScreenHeading eyebrow="Self-custody inventory" title="Wallets" description="Connected signers and watch-only role groups. Private-key import and export do not exist." actions={<><Button onClick={() => setOpen(true)}><Eye size={16} /> Add watch address</Button><Button variant="primary" onClick={() => toast.info("Use the wallet control in the header to connect a signer.")}><WalletCards size={16} /> Connect wallet</Button></>} />
+      <ScreenHeading eyebrow="Self-custody inventory" title="Wallets" description="Create/select accounts in a trusted wallet provider; Sunder links public signer sessions, balances and history." actions={<><Button onClick={() => setOpen(true)}><Eye size={16} /> Add watch address</Button><Button variant="primary" onClick={() => openWalletControl("create")}><Plus size={16} /> Create wallet</Button></>} />
       <div className="custody-banner"><ShieldCheck size={22} /><div><strong>Keys stay in the wallet</strong><span>Sunder stores public addresses only. Persistent automation uses an isolated signer socket policy, never an HTTP private-key payload.</span></div><Badge tone="good">Self-custody</Badge></div>
+      <Panel title={`${chain.name} connected signers`} action={<Badge tone={family === "solana" && signerRegistry.wallets.length > 0 ? "good" : "neutral"}>{family === "solana" ? signerRegistry.wallets.length : 0} linked</Badge>}>
+        {family !== "solana" ? <EmptyState icon={<WalletCards size={24} />} title="EVM signer uses the header wallet" description="Switch to SOL to create and link Phantom, Solflare or Backpack signer sessions." /> : signerRegistry.wallets.length === 0 ? <EmptyState icon={<WalletCards size={24} />} title="No signing wallet linked" description="Create/select a wallet inside Phantom, Solflare or Backpack. After approval it appears here, is selected in the terminal and its SOL balance refreshes every 10 seconds." action={<Button variant="primary" onClick={() => openWalletControl("create")}><Plus size={15} /> Create wallet</Button>} /> : <div className="wallet-table">{signerRegistry.wallets.map((entry) => {
+          const signerAddress = entry.session.account.address.toString();
+          return <div key={entry.id}><span className="wallet-avatar"><WalletCards size={17} /></span><span><strong>{entry.connectorName}</strong><small>{signerAddress}</small></span><Badge tone="good">Signer</Badge><span>{formatSolBalance(signerBalances[entry.id])}</span><a href={explorerAddressUrl(signerAddress)} target="_blank" rel="noreferrer" className="icon-button"><ExternalLink size={15} /></a><button className="icon-button" type="button" onClick={() => void signerRegistry.disconnect(entry.id)} aria-label={`Disconnect ${entry.connectorName}`}><Trash2 size={15} /></button></div>;
+        })}</div>}
+      </Panel>
       <div className="role-metrics"><Metric label="Developer" value={visible.filter((wallet) => wallet.role === "Developer").length} /><Metric label="Bundle" value={visible.filter((wallet) => wallet.role === "Bundle").length} /><Metric label="Sniper" value={visible.filter((wallet) => wallet.role === "Sniper").length} /><Metric label="Task / watch" value={visible.filter((wallet) => wallet.role === "Task" || wallet.role === "Watch only").length} /></div>
       <Panel title={`${chain.name} address inventory`} action={<Badge tone="neutral">0 secrets</Badge>}>
         {visible.length === 0 ? <EmptyState icon={<WalletCards size={24} />} title="No watch-only addresses" description="Add public addresses for transparent role planning, or connect a browser wallet for interactive signing." action={<Button onClick={() => setOpen(true)}>Add public address</Button>} /> : <div className="wallet-table">{visible.map((wallet) => <div key={wallet.id}><span className="wallet-avatar"><WalletCards size={17} /></span><span><strong>{wallet.name}</strong><small>{wallet.address}</small></span><Badge tone="accent">{wallet.role}</Badge><span className="muted">Balance loads from RPC when an indexer is configured</span><a href={explorerAddressUrl(wallet.address)} target="_blank" rel="noreferrer" className="icon-button"><ExternalLink size={15} /></a><button className="icon-button" type="button" onClick={() => workspace.removeWallet(wallet.id)} aria-label={`Remove ${wallet.name}`}><Trash2 size={15} /></button></div>)}</div>}
+      </Panel>
+      <Panel title="Wallet-linked history" action={<Badge tone="neutral">{walletHistory.length} local records</Badge>}>
+        {walletHistory.length === 0 ? <EmptyState icon={<History size={22} />} title="No wallet history yet" description="A real signer connection, simulation or canonically confirmed transaction will appear here. No fake wallet creation event is added." /> : <div className="audit-list compact">{walletHistory.map((entry) => <div key={entry.id}><span className={`status-dot status-dot--${entry.state}`} /><span><strong>{entry.action}</strong><small>{entry.detail}</small></span><Badge tone={entry.state === "confirmed" ? "good" : entry.state === "failed" ? "bad" : "neutral"}>{entry.state}</Badge><time>{formatTime(entry.at)}</time></div>)}</div>}
       </Panel>
       <Panel className="safe-replacement"><ArrowDownUp size={20} /><div><strong>Fund & Collect</strong><p>Transparent batched distribution will show exact recipients, amounts, fees and confirmations. Mixer/evasion modes are intentionally absent.</p></div><Button onClick={() => toast.info("Funding remains locked until a connected wallet and transaction preview are available.")}>Open preview</Button></Panel>
       <Modal open={open} onOpenChange={setOpen} title="Add watch-only address" description="Only a public address is accepted. Never paste a private key or seed phrase.">

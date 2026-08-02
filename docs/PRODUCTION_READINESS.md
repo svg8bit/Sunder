@@ -5,10 +5,10 @@ This matrix distinguishes implemented code from configured infrastructure and in
 | Capability | Solana Devnet | Solana Mainnet | Ethereum Sepolia | Ethereum Mainnet |
 |---|---|---|---|---|
 | UI family/network mode | Implemented | Implemented | Implemented | Implemented |
-| Browser wallet and balance | Wallet Standard implemented | Wallet Standard implemented | EIP-1193/wagmi implemented | EIP-1193/wagmi implemented |
+| Browser wallet and balance | Wallet Standard implemented | Multi-connector Wallet Standard registry; provider-owned account creation, safe reconnect and selected signer balances poll confirmed RPC every 10 s | EIP-1193/wagmi implemented | EIP-1193/wagmi implemented |
 | Safe verification transaction | Executable one-lamport self-transfer; wallet/funds required | Test-only action disabled | Executable zero-value self-transfer; wallet/gas required | Test-only action disabled |
 | Launch adapter | Pump boundary implemented; no fabricated deploy | Pump quote/build implemented | Fixed-supply ERC-20 deploy implemented | Direct funded deploy locked |
-| Swap quote/build | Pump SDK quote/buy | Interactive Jupiter Swap V2 build with `platformFeeBps=0`; Pump route observed | V2/V3/V4 official paths | V2/V3/V4 official paths |
+| Swap quote/build | Pump SDK quote/buy | Interactive Jupiter Swap V2 basket with `platformFeeBps=0`; one build/simulation/signature/confirmation per selected connected signer | V2/V3/V4 official paths | V2/V3/V4 official paths |
 | Exact simulation | Implemented | Implemented | `eth_call` + `estimateGas` | `eth_call` + `estimateGas` |
 | Read-only live acceptance | Test fixtures only | Fresh confirmed Pump event → Jupiter `Pump.fun` route → two unsigned RPC simulations passed on 2026-08-02; `137186` CU and `5004` lamport fee estimate | Test fixtures only | Not run |
 | Relays | Standard RPC; private relays optional | RPC/Jito/Nozomi/0slot adapters; credentials absent | RPC/Flashbots adapter | RPC/Flashbots adapter; operator config absent |
@@ -24,9 +24,11 @@ This matrix distinguishes implemented code from configured infrastructure and in
 - Local draft/project/watch-wallet/audit workflows with no secret storage or fake on-chain state.
 - Independent engine, Solana/EVM adapters, relay routing, retry, risk and confirmation tests.
 - Browser connect/balance/simulation/sign/confirmation code paths when a compatible wallet is present.
-- Solana Mainnet live recent-pool feed through Jupiter's anonymous public-lite host, confirmed Pump trade tape, direct zero-Sunder-fee Jupiter build/simulation/sign/submission path and exact confirmed wallet-delta ledger. The anonymous discovery feed is best-effort; a project-scoped server-side Jupiter key is still required before claiming a data-provider SLA.
+- Solana Mainnet live recent-pool feed through a bounded five-second Vercel CDN cache with direct-provider and two-minute real-data browser fallbacks, confirmed Pump trade tape, observed-data-only TradingView Lightweight Charts candles, direct zero-Sunder-fee Jupiter build/simulation/sign/submission path and exact confirmed wallet-delta ledger. The anonymous discovery feed is best-effort; a project-scoped server-side Jupiter key is still required before claiming a data-provider SLA.
+- Connected Phantom/Solflare/Backpack-style Wallet Standard sessions can be selected together. Buy amount applies per selected signer; Sell percentage is calculated per selected signer's token balance. Every transaction is simulated independently, every wallet signs separately, partial failure stops the basket, and retries skip already RPC-confirmed wallets.
 - A live Mainnet read-only acceptance run used a current Pump event and active public taker to build and simulate a `0.001 SOL` buy twice through the Jupiter `Pump.fun` route. It did not request a signature, submit a transaction, or spend funds.
-- Per-arm canonical execution cap of one to three confirmations and deterministic signer-aware wallet-basket planning; watch-only addresses are excluded.
+- `Create wallet` opens an installed trusted provider or current official provider install/create page. Once the user approves, its public signer session appears in both Wallets surfaces, is auto-selected for terminal fan-out, reconnects without an interactive fallback when supported, and records a public wallet-linked history entry. Connector selection, wallet selection, watch inventory, confirmed receipts and audit history are versioned browser-local data; no secret material is persisted and no cross-device account backend is claimed.
+- Persistent public connector/session metadata, ten-second confirmed-RPC SOL balance refresh and signer-aware wallet-basket planning; watch-only addresses are excluded from every signing path.
 - Fixed-supply ERC-20 bytecode generation and deployment encoding.
 - Executor build, liveness, readiness matrix, authentication, kill switch and Mainnet lock tests.
 
@@ -38,6 +40,8 @@ This matrix distinguishes implemented code from configured infrastructure and in
 - Solana private relays until their endpoints/credentials and verified tip recipient are configured.
 - Tax/CREATE2 launch factories until an audited/verified factory address and exact simulation path are configured.
 - Complete historical/unrealized portfolio PnL until a project-scoped indexer and live valuation source are configured. The current ledger intentionally reports only confirmed session/browser history and excludes unvalued holdings.
+- In-app generated/imported/exported private keys. Account creation/export stays inside Phantom, Solflare, Backpack or another trusted wallet. Sunder remains self-custody; persistent automation uses a separately provisioned policy signer rather than secret material in the web UI.
+- Cross-device/user-account wallet history. The first public build persists only in the current browser profile; a future project-scoped auth/storage service must preserve the same public-only boundary.
 
 ## Dependency audit boundary
 

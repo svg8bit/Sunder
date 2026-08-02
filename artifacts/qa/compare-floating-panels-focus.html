@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sunder floating panel focused comparison</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 1814px; height: 600px; margin: 0; overflow: hidden; background: #050608; color: #fff; }
+      main { display: grid; width: 1814px; height: 600px; align-items: start; gap: 12px; padding: 12px; grid-template-columns: 300px 326px 570px 570px; }
+      figure { position: relative; height: 576px; margin: 0; overflow: hidden; border: 1px solid #4a5057; background: #080a0d; }
+      img { position: absolute; display: block; max-width: none; }
+      .trade-source img { top: -140px; left: -1492px; width: 1792px; height: 800px; }
+      .trade-implementation img { top: -342px; left: -382px; width: 1908px; height: 832px; }
+      .wallet-source img { top: 42px; left: 0; width: 570px; height: 273px; }
+      .wallet-implementation img { top: -342px; left: -744px; width: 1908px; height: 832px; }
+      figcaption { position: absolute; z-index: 1; top: 7px; left: 7px; max-width: calc(100% - 14px); padding: 5px 8px; border: 1px solid #666; background: rgba(0, 0, 0, .88); color: #fff; font: 12px system-ui; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <figure class="trade-source"><figcaption>Axiom trade reference</figcaption><img src="./axiom-terminal-trade-reference.png" alt="Axiom trade panel source" /></figure>
+      <figure class="trade-implementation"><figcaption>Sunder movable Buy/Sell panel</figcaption><img src="./terminal-desktop-multiwallet-live-final.png" alt="Sunder floating Buy and Sell trade panel" /></figure>
+      <figure class="wallet-source"><figcaption>Axiom wallet-table reference</figcaption><img src="./axiom-wallets-reference.png" alt="Axiom wallet table source" /></figure>
+      <figure class="wallet-implementation"><figcaption>Sunder movable signer wallet table</figcaption><img src="./terminal-desktop-multiwallet-live-final.png" alt="Sunder floating signer wallet panel" /></figure>
+    </main>
+  </body>
+</html>

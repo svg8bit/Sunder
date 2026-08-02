@@ -13,8 +13,8 @@ const storedSelectionSchema = z.object({
 type StoredSelection = z.infer<typeof storedSelectionSchema>;
 
 const defaultSelection: StoredSelection = {
-  solana: "solana:devnet",
-  evm: "evm:sepolia",
+  solana: "solana:mainnet",
+  evm: "evm:mainnet",
   family: "solana",
 };
 

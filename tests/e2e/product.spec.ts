@@ -201,6 +201,35 @@ test("desktop console matches dense source composition", async ({ page }, testIn
   await expectNoHorizontalOverflow(page);
 });
 
+test("terminal panels drag, persist, and expose live candlestick controls", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "Desktop interaction evidence only");
+  await page.goto("/swap");
+  const trade = page.locator(".terminal-floating-panel--trade");
+  const wallets = page.locator(".terminal-floating-panel--wallets");
+  const handle = trade.locator(".terminal-floating-panel__handle");
+  await expect(trade).toBeVisible();
+  await expect(wallets).toBeVisible();
+  await expect(page.getByRole("button", { name: "1s" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Charting by TradingView" })).toBeVisible();
+  await expect(page.getByLabel("Slippage percent")).toHaveValue("1");
+
+  const before = await trade.boundingBox();
+  const handleBox = await handle.boundingBox();
+  expect(before).not.toBeNull();
+  expect(handleBox).not.toBeNull();
+  await page.mouse.move(handleBox!.x + 70, handleBox!.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(handleBox!.x + 210, handleBox!.y + 90, { steps: 6 });
+  await page.mouse.up();
+  const moved = await trade.boundingBox();
+  expect(moved!.x).toBeGreaterThan(before!.x + 100);
+  expect(moved!.y).toBeGreaterThan(before!.y + 40);
+  await page.reload();
+  const restored = await trade.boundingBox();
+  expect(restored!.x).toBeCloseTo(moved!.x, 0);
+  expect(restored!.y).toBeCloseTo(moved!.y, 0);
+});
+
 test("all mobile product routes stay within the viewport", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "Mobile evidence only");
   for (const route of ["dashboard", "projects", "wallets", "xid", "leaders", "launch", "sniper", "swap", "tracker", "settings", "audit", "docs"] as const) {
@@ -208,16 +237,18 @@ test("all mobile product routes stay within the viewport", async ({ page }, test
     await expectNoHorizontalOverflow(page);
     if (route === "swap") {
       await expect(page.locator(".terminal-workspace")).toBeVisible();
-      await expect(page.locator(".terminal-trade-dock")).toBeVisible();
+      await expect(page.locator(".terminal-floating-layer")).toBeVisible();
+      await expect(page.locator(".terminal-floating-panel--trade")).toBeVisible();
+      await expect(page.locator(".terminal-floating-panel--wallets")).toBeVisible();
       const terminalFlow = await page.evaluate(() => {
         const workspace = document.querySelector<HTMLElement>(".terminal-workspace");
-        const dock = document.querySelector<HTMLElement>(".terminal-trade-dock");
-        if (!workspace || !dock) throw new Error("Trading terminal layout is missing.");
+        const layer = document.querySelector<HTMLElement>(".terminal-floating-layer");
+        if (!workspace || !layer) throw new Error("Trading terminal layout is missing.");
         const workspaceBox = workspace.getBoundingClientRect();
-        const dockBox = dock.getBoundingClientRect();
+        const layerBox = layer.getBoundingClientRect();
         return {
           workspaceBottom: workspaceBox.bottom + window.scrollY,
-          dockTop: dockBox.top + window.scrollY,
+          dockTop: layerBox.top + window.scrollY,
         };
       });
       expect(terminalFlow.dockTop).toBeGreaterThanOrEqual(terminalFlow.workspaceBottom - 1);

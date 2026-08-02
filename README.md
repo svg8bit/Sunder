@@ -2,7 +2,7 @@
 
 Sunder is a self-custody Solana and Ethereum execution console with launch, wallet, sniper, swap, task, tracking and audit workflows. It is an independent product with familiar operational labels and a strict rule: provider acceptance, simulation, or a predicted address is never reported as on-chain success.
 
-The application supports Solana Mainnet and Ethereum Mainnet as product modes. Devnet and Sepolia are the safe automated verification environments. Interactive Solana Mainnet swaps can be simulated and explicitly signed by a connected browser wallet; persistent funded Mainnet automation remains locked until RPC, signer, relay, funding, budgets and operator confirmation are configured.
+The application supports Solana Mainnet and Ethereum Mainnet as product modes. Devnet and Sepolia are the safe automated verification environments. Interactive Solana Mainnet swaps can be simulated and explicitly signed by one or more selected Wallet Standard browser wallets; persistent funded Mainnet automation remains locked until RPC, signer, relay, funding, budgets and operator confirmation are configured.
 
 ## Product areas
 
@@ -10,7 +10,7 @@ The application supports Solana Mainnet and Ethereum Mainnet as product modes. D
 - Launch Studio with Quick Deploy, Bundle, Snipe, LBS and Dev-only modes
 - Chain-agnostic P0 Sniper Engine
 - Swap Manager, Buy Tasks, Auto TP, Smart Sell and Anti-Sniper
-- Solana live terminal with recent-pool discovery, confirmed Pump trade events, direct Jupiter quotes and exact confirmed realized net cash-flow PnL for tracked inventory; unvalued holdings and incomplete history remain explicitly excluded
+- Solana live terminal with recent-pool discovery, confirmed Pump trade events, TradingView Lightweight Charts candles built only from observed data, direct Jupiter quotes, selected-wallet fan-out, live SOL balances and exact confirmed realized net cash-flow PnL for tracked inventory; unvalued holdings and incomplete history remain explicitly excluded
 - Tracker, notifications, Audit Trail, Settings and in-product Docs
 - Solana Wallet Standard and EVM EIP-1193 browser-wallet verification
 - Separate persistent executor with Unix-socket signing and JSONL audit
@@ -27,7 +27,7 @@ EventSource -> RuleEvaluator -> QuoteAdapter -> TransactionAdapter -> Simulator
   -> bounded RetryController -> RiskEngine -> AuditSink
 ```
 
-Solana adapters cover Pump quoting/building, fresh blockhashes, compute-unit policy, RPC/Jito/Nozomi/0slot submission and signature confirmation. The browser Mainnet terminal adds live Jupiter-indexed pools, confirmed Pump `TradeEvent` streaming and direct Jupiter Swap V2 transaction manifests with `platformFeeBps=0`. It runs unsigned and signed simulation, then records exact wallet deltas only after canonical RPC confirmation. Pump/AMM, network, priority, rent and optional relay fees still apply; only Sunder's platform fee is zero. EVM adapters cover Uniswap V2/V3/V4-aware routing, EIP-1559 nonce-preserving replacement, standard RPC/Flashbots Protect and canonical receipt/finality/reorg tracking.
+Solana adapters cover Pump quoting/building, fresh blockhashes, compute-unit policy, RPC/Jito/Nozomi/0slot submission and signature confirmation. The browser Mainnet terminal adds live Jupiter-indexed pools, confirmed Pump `TradeEvent` streaming and direct Jupiter Swap V2 transaction manifests with `platformFeeBps=0`. A selected-wallet basket builds and simulates one exact transaction per connected signer, then requests signatures sequentially; a partial failure can retry only the still-pending wallets. Exact wallet deltas are recorded only after canonical RPC confirmation. Pump/AMM, network, priority, rent and optional relay fees still apply; only Sunder's platform fee is zero. EVM adapters cover Uniswap V2/V3/V4-aware routing, EIP-1559 nonce-preserving replacement, standard RPC/Flashbots Protect and canonical receipt/finality/reorg tracking.
 
 See [Architecture](docs/ARCHITECTURE.md), [Production readiness](docs/PRODUCTION_READINESS.md), [Executor runbook](docs/EXECUTOR_RUNBOOK.md), [rendered design QA](docs/design-qa.md) and the mandatory [handoff source of truth](docs/HANDOFF.md).
 
@@ -42,7 +42,9 @@ npm run dev
 
 Copy `.env.example` only when custom public RPC endpoints or executor configuration are needed. Never add private keys, seeds, mnemonics or secret keys to `.env` or the browser.
 
-The committed Solana Mainnet fallback is PublicNode because its HTTP and WebSocket endpoints were verified from the browser build. It is shared, best-effort infrastructure. Configure a project-scoped browser-safe RPC before funded use; signer or relay credentials belong only in the private executor/signing boundary.
+The committed Solana Mainnet fallback is PublicNode because its HTTP and WebSocket endpoints were verified from the browser build. It is shared, best-effort infrastructure. Recent-token discovery uses a five-second Vercel CDN cache with a bounded direct-provider fallback and a two-minute browser cache so first paint is not held behind repeated anonymous provider calls. Configure a project-scoped browser-safe RPC before funded use; signer or relay credentials belong only in the private executor/signing boundary.
+
+The web app never receives, imports, stores or exports seed phrases/private keys. `Create wallet` opens a trusted Phantom, Solflare or Backpack provider, where the account and secret are actually created; after connection Sunder stores only the public connector ID/address, auto-selects the signer in the terminal, safely attempts non-interactive reconnection, refreshes confirmed Mainnet SOL balances every 10 seconds, and records public wallet/receipt events in browser-local history. Watch-only addresses are never treated as signers. This first public build is browser-local rather than cross-device account storage.
 
 ## Verification
 

@@ -1,26 +1,35 @@
-import { useSolanaClient, useWalletConnection } from "@solana/react-hooks";
+import type { WalletSession } from "@solana/client";
+import { useSolanaClient } from "@solana/react-hooks";
+import { address as solanaAddress } from "@solana/kit";
 import {
   AlertTriangle,
   ArrowDownUp,
+  BarChart3,
   CheckCircle2,
-  CircleDollarSign,
   Copy,
-  Crosshair,
   ExternalLink,
-  Info,
+  Eye,
+  History,
   LoaderCircle,
+  LockKeyhole,
+  Move,
+  Plus,
   Radio,
   RefreshCw,
   Search,
+  Settings2,
   ShieldCheck,
+  Trash2,
+  Users,
   WalletCards,
   Wifi,
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { planWalletBasket } from "../../packages/sniper-engine/src/index";
 import { Badge, Button, EmptyState, Field, Input, Panel, Segmented, Select, Toggle } from "../components/ui";
+import { FloatingPanel, resetTerminalPanelLayout } from "../components/floating-panel";
+import { LiveCandlestickChart, type CandleInterval } from "../components/live-candlestick-chart";
 import { applyPercentageBps, formatAtomicAmount, parseDecimalAmount } from "../solana/amounts";
 import { SOLANA_MAINNET_RPC_URL } from "../solana/client";
 import {
@@ -35,13 +44,18 @@ import {
 import { safeTokenIcon, searchTokenInformation, type PumpTrade, type TokenInformation } from "../solana/market";
 import { usePumpTradeStream, useRecentTokens } from "../solana/use-market";
 import { useNetwork } from "../state/network";
+import { useSolanaWalletRegistry } from "../state/solana-wallet-registry";
 import { deriveTrackedPosition, useTrading } from "../state/trading";
 import { useWorkspace } from "../state/workspace";
+import { openWalletControl } from "../wallets/control-event";
 
 type FeedFilter = "new" | "moving" | "liquid" | "pump";
 type TradeDirection = "buy" | "sell";
+type TradeMode = "market" | "limit" | "advanced";
 type QuotePhase = "idle" | "quoting" | "ready" | "awaiting-signature" | "signed" | "submitted" | "processed" | "confirmed" | "failed";
 type PricePoint = { readonly at: number; readonly price: number };
+type PreparedWalletSwap = { readonly walletId: string; readonly connectorName: string; readonly wallet: WalletSession; readonly prepared: PreparedJupiterSwap };
+type ConfirmedWalletSwap = { readonly walletId: string; readonly connectorName: string; readonly receipt: ConfirmedSwapReceipt };
 
 function shorten(value: string, left = 5, right = 4): string {
   return value.length <= left + right + 1 ? value : `${value.slice(0, left)}…${value.slice(-right)}`;
@@ -67,6 +81,16 @@ function formatSol(lamports: bigint, precision = 6): string {
   return `${formatAtomicAmount(lamports, 9, precision)} SOL`;
 }
 
+function formatHistoryTime(timestamp: number): string {
+  return new Intl.DateTimeFormat("en", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(timestamp);
+}
+
 function tokenAge(token: TokenInformation): string {
   if (!token.firstPool?.createdAt) return "unknown";
   const createdAt = Date.parse(token.firstPool.createdAt);
@@ -82,7 +106,10 @@ function sourceLabel(token: TokenInformation): string {
 }
 
 function activeRecentToken(tokens: readonly TokenInformation[]): TokenInformation | undefined {
-  return tokens.slice(0, 12).reduce<TokenInformation | undefined>((best, token) => {
+  const recent = tokens.slice(0, 24);
+  const pumpTokens = recent.filter((token) => token.id.toLowerCase().endsWith("pump"));
+  const candidates = pumpTokens.length > 0 ? pumpTokens : recent;
+  return candidates.reduce<TokenInformation | undefined>((best, token) => {
     const volume = (token.stats5m?.buyVolume ?? 0) + (token.stats5m?.sellVolume ?? 0);
     const bestVolume = (best?.stats5m?.buyVolume ?? 0) + (best?.stats5m?.sellVolume ?? 0);
     return !best || volume > bestVolume ? token : best;
@@ -101,106 +128,10 @@ function tokenImage(token: TokenInformation, className: string) {
     : <span className={className}>{token.symbol.slice(0, 2).toUpperCase()}</span>;
 }
 
-function MarketChart({ points, trades, symbol }: { readonly points: readonly PricePoint[]; readonly trades: readonly PumpTrade[]; readonly symbol: string }) {
-  const canvas = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const element = canvas.current;
-    if (!element) return;
-    const draw = () => {
-      const width = Math.max(320, element.clientWidth);
-      const height = Math.max(280, element.clientHeight);
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
-      element.width = Math.round(width * ratio);
-      element.height = Math.round(height * ratio);
-      const context = element.getContext("2d");
-      if (!context) return;
-      context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.clearRect(0, 0, width, height);
-      context.fillStyle = "#0a0d10";
-      context.fillRect(0, 0, width, height);
-      const left = 18;
-      const right = 62;
-      const top = 20;
-      const bottom = 30;
-      const chartWidth = width - left - right;
-      const chartHeight = height - top - bottom;
-      context.strokeStyle = "#1e242a";
-      context.lineWidth = 1;
-      context.font = "10px SFMono-Regular, Consolas, monospace";
-      context.fillStyle = "#66707a";
-      for (let index = 0; index <= 5; index += 1) {
-        const y = top + (chartHeight * index) / 5;
-        context.beginPath();
-        context.moveTo(left, y);
-        context.lineTo(width - right, y);
-        context.stroke();
-      }
-      if (points.length < 2) {
-        context.fillStyle = "#8f98a2";
-        context.textAlign = "center";
-        context.fillText("Collecting live provider observations…", left + chartWidth / 2, top + chartHeight / 2);
-        return;
-      }
-      const prices = points.map((point) => point.price);
-      const minimum = Math.min(...prices);
-      const maximum = Math.max(...prices);
-      const spread = maximum - minimum || Math.max(maximum * 0.02, Number.EPSILON);
-      const min = minimum - spread * 0.12;
-      const max = maximum + spread * 0.12;
-      const start = points[0]!.at;
-      const end = points.at(-1)!.at;
-      const duration = Math.max(1, end - start);
-      const x = (at: number) => left + ((at - start) / duration) * chartWidth;
-      const y = (price: number) => top + (1 - (price - min) / (max - min)) * chartHeight;
-
-      const gradient = context.createLinearGradient(0, top, 0, top + chartHeight);
-      gradient.addColorStop(0, "rgba(255, 121, 0, .22)");
-      gradient.addColorStop(1, "rgba(255, 121, 0, 0)");
-      context.beginPath();
-      points.forEach((point, index) => index === 0 ? context.moveTo(x(point.at), y(point.price)) : context.lineTo(x(point.at), y(point.price)));
-      context.lineTo(x(points.at(-1)!.at), top + chartHeight);
-      context.lineTo(x(points[0]!.at), top + chartHeight);
-      context.closePath();
-      context.fillStyle = gradient;
-      context.fill();
-      context.beginPath();
-      points.forEach((point, index) => index === 0 ? context.moveTo(x(point.at), y(point.price)) : context.lineTo(x(point.at), y(point.price)));
-      context.strokeStyle = "#ff8519";
-      context.lineWidth = 2;
-      context.stroke();
-
-      context.textAlign = "left";
-      context.fillStyle = "#8f98a2";
-      for (let index = 0; index <= 4; index += 1) {
-        const price = max - ((max - min) * index) / 4;
-        context.fillText(formatUsd(price), width - right + 8, top + (chartHeight * index) / 4 + 3);
-      }
-      for (const trade of trades.slice(0, 24)) {
-        if (trade.timestamp < start || trade.timestamp > end) continue;
-        const nearest = points.reduce((best, point) => Math.abs(point.at - trade.timestamp) < Math.abs(best.at - trade.timestamp) ? point : best, points[0]!);
-        context.beginPath();
-        context.arc(x(trade.timestamp), y(nearest.price), 4, 0, Math.PI * 2);
-        context.fillStyle = trade.side === "buy" ? "#57d796" : "#ff646d";
-        context.fill();
-      }
-    };
-    draw();
-    const observer = new ResizeObserver(draw);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [points, trades]);
-
-  const latest = points.at(-1)?.price;
-  const first = points[0]?.price;
-  const change = latest !== undefined && first ? ((latest - first) / first) * 100 : undefined;
-  return (
-    <figure className="market-chart">
-      <div className="market-chart__legend"><span><i /> {symbol}/USD · provider observations</span><b className={(change ?? 0) >= 0 ? "is-positive" : "is-negative"}>{formatSigned(change)}</b></div>
-      <canvas ref={canvas} role="img" aria-label={`${symbol} live price chart with ${points.length} Jupiter observations and ${trades.length} confirmed Pump event markers`} />
-      <figcaption>Orange line: Jupiter token observations. Green/red markers: confirmed Pump program events placed at the nearest indexed price.</figcaption>
-    </figure>
-  );
+function slippagePercentToBps(value: string): number {
+  const percent = Number(value.replace(",", "."));
+  if (!Number.isFinite(percent)) return 100;
+  return Math.min(5_000, Math.max(1, Math.round(percent * 100)));
 }
 
 function TokenFeedRow({ token, active, disabled, onSelect }: { readonly token: TokenInformation; readonly active: boolean; readonly disabled?: boolean; readonly onSelect: () => void }) {
@@ -256,7 +187,7 @@ function EvmTerminalBoundary() {
 export function TradingTerminalScreen() {
   const { family, network, explorerAddressUrl, explorerTransactionUrl, setFamily, setNetwork } = useNetwork();
   const client = useSolanaClient();
-  const connection = useWalletConnection();
+  const walletRegistry = useSolanaWalletRegistry();
   const workspace = useWorkspace();
   const trading = useTrading();
   const live = network === "solana:mainnet";
@@ -268,15 +199,29 @@ export function TradingTerminalScreen() {
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
   const [observations, setObservations] = useState<Readonly<Record<string, readonly PricePoint[]>>>({});
+  const [candleInterval, setCandleInterval] = useState<CandleInterval>(1);
   const [direction, setDirection] = useState<TradeDirection>("buy");
+  const [tradeMode, setTradeMode] = useState<TradeMode>("market");
+  const [preset, setPreset] = useState<"1" | "2" | "3">("1");
   const [amount, setAmount] = useState("0.05");
   const [sellPercentage, setSellPercentage] = useState(10_000);
-  const [slippageBps, setSlippageBps] = useState(100);
+  const [slippagePercent, setSlippagePercent] = useState("1");
   const [priorityProfile, setPriorityProfile] = useState<PriorityProfile>("high");
   const [fastMode, setFastMode] = useState(true);
-  const [confirmedCap, setConfirmedCap] = useState(3);
-  const [prepared, setPrepared] = useState<PreparedJupiterSwap>();
-  const [receipt, setReceipt] = useState<ConfirmedSwapReceipt>();
+  const [mevMode, setMevMode] = useState<"standard" | "private">("standard");
+  const [walletSearch, setWalletSearch] = useState("");
+  const [showWatchOnly, setShowWatchOnly] = useState(true);
+  const [walletTab, setWalletTab] = useState<"wallets" | "history">("wallets");
+  const [selectedWalletIds, setSelectedWalletIds] = useState<readonly string[]>(() => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem("sunder:terminal-wallet-selection:v1") ?? "[]");
+      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string").slice(0, 100) : [];
+    } catch { return []; }
+  });
+  const [signerBalances, setSignerBalances] = useState<Readonly<Record<string, bigint>>>({});
+  const [watchBalances, setWatchBalances] = useState<Readonly<Record<string, bigint>>>({});
+  const [preparedBasket, setPreparedBasket] = useState<readonly PreparedWalletSwap[]>([]);
+  const [confirmedBasket, setConfirmedBasket] = useState<readonly ConfirmedWalletSwap[]>([]);
   const [phase, setPhase] = useState<QuotePhase>("idle");
   const [error, setError] = useState<string>();
   const quoteAbort = useRef<AbortController | undefined>(undefined);
@@ -285,8 +230,8 @@ export function TradingTerminalScreen() {
   const invalidateQuote = useCallback(() => {
     quoteAbort.current?.abort();
     quoteAbort.current = undefined;
-    setPrepared(undefined);
-    setReceipt(undefined);
+    setPreparedBasket([]);
+    setConfirmedBasket([]);
     setPhase("idle");
     setError(undefined);
   }, []);
@@ -335,6 +280,57 @@ export function TradingTerminalScreen() {
   useEffect(() => () => quoteAbort.current?.abort(), []);
 
   const stream = usePumpTradeStream({ enabled: live && Boolean(selected), mint: selected?.id, decimals: selected?.decimals });
+  const networkWallets = useMemo(() => workspace.wallets.filter((candidate) => candidate.network === network), [network, workspace.wallets]);
+  const watchWalletKey = networkWallets.map((candidate) => `${candidate.id}:${candidate.address}`).join("|");
+  const signingWalletKey = walletRegistry.wallets.map((candidate) => `${candidate.id}:${candidate.session.account.address.toString()}`).join("|");
+
+  useEffect(() => {
+    try { window.localStorage.setItem("sunder:terminal-wallet-selection:v1", JSON.stringify(selectedWalletIds)); } catch { /* Storage policy may deny persistence. */ }
+  }, [selectedWalletIds]);
+
+  useEffect(() => {
+    const signerIds = walletRegistry.wallets.map((candidate) => candidate.id);
+    setSelectedWalletIds((current) => {
+      const activeSignerIds = new Set(signerIds);
+      const retained = current.filter((id) => !id.startsWith("browser:") || activeSignerIds.has(id));
+      const next = [...new Set([...signerIds, ...retained])];
+      return next.length === current.length && next.every((value, index) => value === current[index]) ? current : Object.freeze(next);
+    });
+  }, [signingWalletKey, walletRegistry.wallets]);
+
+  useEffect(() => {
+    if (!live || walletRegistry.wallets.length === 0) { setSignerBalances({}); return; }
+    const controller = new AbortController();
+    const refresh = async () => {
+      const settled = await Promise.allSettled(walletRegistry.wallets.map(async (candidate) => {
+        const response = await client.runtime.rpc.getBalance(candidate.session.account.address, { commitment: "confirmed" }).send({ abortSignal: controller.signal });
+        return [candidate.id, response.value] as const;
+      }));
+      if (controller.signal.aborted) return;
+      setSignerBalances(Object.freeze(Object.fromEntries(settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []))));
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 10_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [client, live, signingWalletKey, walletRegistry.wallets]);
+
+  useEffect(() => {
+    if (!live || networkWallets.length === 0) { setWatchBalances({}); return; }
+    const controller = new AbortController();
+    const refresh = async () => {
+      const settled = await Promise.allSettled(networkWallets.map(async (candidate) => {
+        const response = await client.runtime.rpc.getBalance(solanaAddress(candidate.address), { commitment: "confirmed" }).send({ abortSignal: controller.signal });
+        return [candidate.id, response.value] as const;
+      }));
+      if (controller.signal.aborted) return;
+      const next = Object.fromEntries(settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []));
+      setWatchBalances(Object.freeze(next));
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 20_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [client, live, networkWallets, watchWalletKey]);
+
   const visibleTokens = useMemo(() => tokens.filter((token) => {
     if (filter === "moving") return Math.abs(token.stats5m?.priceChange ?? 0) >= 3;
     if (filter === "liquid") return (token.liquidity ?? 0) >= 10_000;
@@ -342,27 +338,22 @@ export function TradingTerminalScreen() {
     return true;
   }), [filter, tokens]);
 
-  const wallet = connection.status === "connected" ? connection.wallet : undefined;
-  const walletAddress = wallet?.account.address.toString();
-  const selectedTrades = useMemo(() => trading.trades.filter((trade) => trade.wallet === walletAddress && trade.tokenMint === selected?.id), [selected?.id, trading.trades, walletAddress]);
+  const selectedSigners = useMemo(() => walletRegistry.wallets.filter((candidate) => selectedWalletIds.includes(candidate.id)), [selectedWalletIds, walletRegistry.wallets]);
+  const selectedSignerAddresses = useMemo(() => new Set(selectedSigners.map((candidate) => candidate.session.account.address.toString())), [selectedSigners]);
+  const visibleWallets = useMemo(() => networkWallets.filter((candidate) => {
+    const query = walletSearch.trim().toLowerCase();
+    return showWatchOnly && (!query || `${candidate.name} ${candidate.address} ${candidate.role}`.toLowerCase().includes(query));
+  }), [networkWallets, showWatchOnly, walletSearch]);
+  const selectedTrades = useMemo(() => trading.trades.filter((trade) => selectedSignerAddresses.has(trade.wallet) && trade.tokenMint === selected?.id), [selected?.id, selectedSignerAddresses, trading.trades]);
   const position = useMemo(() => deriveTrackedPosition(selectedTrades), [selectedTrades]);
+  const walletHistory = useMemo(() => workspace.audit
+    .filter((entry) => entry.network === network && (entry.category === "wallet" || entry.category === "execution"))
+    .slice(0, 30), [network, workspace.audit]);
   const totalFees = selectedTrades.reduce((sum, trade) => sum + BigInt(trade.networkFeeLamports) + BigInt(trade.accountRentAndOtherLamports), 0n);
 
-  const basket = useMemo(() => {
-    if (!walletAddress) return undefined;
-    let totalAtomic: bigint;
-    try { totalAtomic = direction === "buy" ? parseDecimalAmount(amount, 9) : 1n; } catch { return undefined; }
-    try {
-      return planWalletBasket({
-        totalAtomic,
-        maxConfirmedExecutions: confirmedCap,
-        members: [
-          { id: "browser-wallet", address: walletAddress, label: "Connected wallet", capability: "wallet-standard", enabled: true, weightBps: 10_000 },
-          ...workspace.wallets.filter((candidate) => candidate.network === network).map((candidate) => ({ id: candidate.id, address: candidate.address, label: candidate.name, capability: "watch-only" as const, enabled: true, weightBps: 10_000 })),
-        ],
-      });
-    } catch { return undefined; }
-  }, [amount, confirmedCap, direction, network, walletAddress, workspace.wallets]);
+  useEffect(() => {
+    invalidateQuote();
+  }, [invalidateQuote, selectedWalletIds]);
 
   const submitSearch = async (event: FormEvent) => {
     event.preventDefault();
@@ -382,36 +373,35 @@ export function TradingTerminalScreen() {
 
   const prepare = async () => {
     if (!live) { toast.error("Direct swaps are enabled only on Solana Mainnet."); return; }
+    if (tradeMode === "limit") { toast.error("Limit orders require the persistent executor. Open Sniper to arm them."); return; }
+    if (mevMode === "private") { toast.error("Private relay is not configured in this browser deployment. Select Standard RPC or configure the executor."); return; }
     if (!selected) { toast.error("Select a live token first."); return; }
-    if (!wallet || !walletAddress) { toast.error("Connect a Wallet Standard signer in the header first."); return; }
+    if (walletRegistry.wallets.length === 0) { toast.error("Connect at least one Wallet Standard signer first."); return; }
+    if (selectedSigners.length === 0) { toast.error("Select at least one connected signer in the Wallets panel."); return; }
     quoteAbort.current?.abort();
     const controller = new AbortController();
     quoteAbort.current = controller;
     setPhase("quoting");
     setError(undefined);
-    setReceipt(undefined);
+    setConfirmedBasket([]);
     try {
-      const amountAtomic = direction === "buy"
-        ? parseDecimalAmount(amount, 9)
-        : applyPercentageBps(await getWalletTokenBalanceAtomic({ rpcUrl: SOLANA_MAINNET_RPC_URL, owner: walletAddress, mint: selected.id, signal: controller.signal }), sellPercentage);
-      const next = await prepareJupiterSwap({
-        client,
-        signal: controller.signal,
-        intent: {
-          direction,
-          tokenMint: selected.id,
-          amountAtomic,
-          taker: walletAddress,
-          slippageBps,
-          priorityProfile,
-          fastMode,
-        },
-      });
+      const buyAmountAtomic = direction === "buy" ? parseDecimalAmount(amount, 9) : undefined;
+      const slippageBps = slippagePercentToBps(slippagePercent);
+      const next = await Promise.all(selectedSigners.map(async (entry): Promise<PreparedWalletSwap> => {
+        const taker = entry.session.account.address.toString();
+        const amountAtomic = buyAmountAtomic ?? applyPercentageBps(await getWalletTokenBalanceAtomic({ rpcUrl: SOLANA_MAINNET_RPC_URL, owner: taker, mint: selected.id, signal: controller.signal }), sellPercentage);
+        const prepared = await prepareJupiterSwap({
+          client,
+          signal: controller.signal,
+          intent: { direction, tokenMint: selected.id, amountAtomic, taker, slippageBps, priorityProfile, fastMode },
+        });
+        return Object.freeze({ walletId: entry.id, connectorName: entry.connectorName, wallet: entry.session, prepared });
+      }));
       if (controller.signal.aborted) return;
-      setPrepared(next);
+      setPreparedBasket(Object.freeze(next));
       setPhase("ready");
-      workspace.record({ category: "simulation", action: "Direct Jupiter swap simulated", detail: `${direction} ${selected.symbol}; platformFeeBps=0; unsigned RPC simulation passed.`, state: "passed", network });
-      toast.success("Quote built and exact unsigned transaction simulation passed.");
+      workspace.record({ category: "simulation", action: "Wallet basket simulated", detail: `${direction} ${selected.symbol} for ${next.length} signer(s); platformFeeBps=0; every unsigned RPC simulation passed.`, state: "passed", network });
+      toast.success(`${next.length} wallet transaction${next.length === 1 ? "" : "s"} built and simulated.`);
     } catch (prepareError) {
       if (controller.signal.aborted) return;
       const detail = prepareError instanceof Error ? prepareError.message : String(prepareError);
@@ -425,42 +415,54 @@ export function TradingTerminalScreen() {
   };
 
   const execute = async () => {
-    if (!prepared || !wallet || !selected || !walletAddress) return;
+    if (preparedBasket.length === 0 || !selected) return;
     if (executing.current) return;
+    const alreadyConfirmed = new Set(confirmedBasket.map((entry) => entry.walletId));
+    const pendingBasket = preparedBasket.filter((entry) => !alreadyConfirmed.has(entry.walletId));
+    if (pendingBasket.length === 0) return;
     executing.current = true;
     setError(undefined);
     setPhase("awaiting-signature");
+    let activeEntry: PreparedWalletSwap | undefined;
     try {
-      const confirmed = await executePreparedJupiterSwap({
-        client,
-        wallet,
-        prepared,
-        onState: (state: SwapExecutionState, signature?: string) => {
-          setPhase(state);
-          if (state === "submitted" && signature) toast.info("Submitted. Waiting for canonical RPC confirmation.");
-        },
-      });
-      setReceipt(confirmed);
+      for (const entry of pendingBasket) {
+        activeEntry = entry;
+        const confirmed = await executePreparedJupiterSwap({
+          client,
+          wallet: entry.wallet,
+          prepared: entry.prepared,
+          onState: (state: SwapExecutionState, signature?: string) => {
+            setPhase(state === "confirmed" ? "processed" : state);
+            if (state === "submitted" && signature) toast.info(`${entry.connectorName} submitted. Waiting for canonical RPC confirmation.`);
+          },
+        });
+        const result = Object.freeze({ walletId: entry.walletId, connectorName: entry.connectorName, receipt: confirmed });
+        setConfirmedBasket((current) => Object.freeze([...current, result]));
+        const walletAddress = entry.wallet.account.address.toString();
+        const recorded = trading.recordConfirmedSwap(confirmed, selected, walletAddress);
+        workspace.record({
+          category: "execution",
+          action: "Basket swap canonically confirmed",
+          detail: recorded
+            ? `${entry.connectorName}: ${confirmed.direction} ${selected.symbol}; exact wallet deltas recorded; Sunder platform fee 0 bps.`
+            : `${entry.connectorName}: canonical RPC confirmation passed, but the bounded local ledger rejected the record.`,
+          state: "confirmed",
+          network,
+          signature: confirmed.signature,
+        });
+        try {
+          const balance = await client.runtime.rpc.getBalance(entry.wallet.account.address, { commitment: "confirmed" }).send();
+          setSignerBalances((current) => Object.freeze({ ...current, [entry.walletId]: balance.value }));
+        } catch { /* The 10-second balance poll remains the fallback. */ }
+      }
       setPhase("confirmed");
-      const recorded = trading.recordConfirmedSwap(confirmed, selected, walletAddress);
-      workspace.record({
-        category: "execution",
-        action: "Direct swap canonically confirmed",
-        detail: recorded
-          ? `${confirmed.direction} ${selected.symbol}; exact wallet deltas recorded; Sunder platform fee 0 bps.`
-          : `${confirmed.direction} ${selected.symbol}; canonical RPC confirmation passed, but the bounded local ledger rejected the record.`,
-        state: "confirmed",
-        network,
-        signature: confirmed.signature,
-      });
-      if (recorded) toast.success("Swap confirmed by RPC and exact wallet deltas recorded.");
-      else toast.warning("Swap confirmed by RPC, but the local ledger rejected its bounded record. Use the explorer receipt as evidence.");
+      toast.success(`${preparedBasket.length}/${preparedBasket.length} wallet swaps confirmed by RPC.`);
     } catch (executeError) {
       const detail = executeError instanceof Error ? executeError.message : String(executeError);
       setError(detail);
       setPhase("failed");
-      workspace.record({ category: "execution", action: "Direct swap did not confirm", detail, state: "failed", network });
-      toast.error(detail);
+      workspace.record({ category: "execution", action: "Wallet basket stopped", detail: `${activeEntry?.connectorName ?? "Signer"}: ${detail}`, state: "failed", network });
+      toast.error(`${activeEntry?.connectorName ?? "Signer"}: ${detail}`);
     } finally {
       executing.current = false;
     }
@@ -468,16 +470,41 @@ export function TradingTerminalScreen() {
 
   if (family === "evm") return <EvmTerminalBoundary />;
 
-  const expectedOutput = prepared
-    ? formatAtomicAmount(BigInt(prepared.build.outAmount), direction === "buy" ? (selected?.decimals ?? 0) : 9, 6)
+  const prepared = preparedBasket[0]?.prepared;
+  const expectedOutput = preparedBasket.length > 0
+    ? formatAtomicAmount(preparedBasket.reduce((sum, entry) => sum + BigInt(entry.prepared.build.outAmount), 0n), direction === "buy" ? (selected?.decimals ?? 0) : 9, 6)
     : undefined;
-  const minimumOutput = prepared
-    ? formatAtomicAmount(BigInt(prepared.build.otherAmountThreshold), direction === "buy" ? (selected?.decimals ?? 0) : 9, 6)
+  const minimumOutput = preparedBasket.length > 0
+    ? formatAtomicAmount(preparedBasket.reduce((sum, entry) => sum + BigInt(entry.prepared.build.otherAmountThreshold), 0n), direction === "buy" ? (selected?.decimals ?? 0) : 9, 6)
     : undefined;
-  const quoteInputLamports = prepared && direction === "buy" ? prepared.intent.amountAtomic : 0n;
+  const quoteInputLamports = direction === "buy" ? preparedBasket.reduce((sum, entry) => sum + entry.prepared.intent.amountAtomic, 0n) : 0n;
   const referenceVenueFee = quoteInputLamports / 100n;
+  const estimatedNetworkFeeLamports = preparedBasket.reduce((sum, entry) => sum + entry.prepared.estimatedNetworkFeeLamports, 0n);
+  const latestConfirmed = confirmedBasket.at(-1)?.receipt;
+  const pendingPreparedCount = Math.max(0, preparedBasket.length - confirmedBasket.length);
   const settling = ["awaiting-signature", "signed", "submitted", "processed"].includes(phase);
   const busy = ["quoting", "awaiting-signature", "signed", "submitted", "processed"].includes(phase);
+  const activeWalletCount = walletRegistry.wallets.length + networkWallets.length;
+  const selectedSignerBalanceLamports = selectedSigners.reduce((sum, candidate) => sum + (signerBalances[candidate.id] ?? 0n), 0n);
+  const selectedSignerBalanceLoading = selectedSigners.some((candidate) => signerBalances[candidate.id] === undefined);
+  const selectedBalanceLamports = selectedSignerBalanceLamports
+    + networkWallets.reduce((sum, candidate) => selectedWalletIds.includes(candidate.id) ? sum + (watchBalances[candidate.id] ?? 0n) : sum, 0n);
+  const displayedWalletIds = [...walletRegistry.wallets.map((candidate) => candidate.id), ...visibleWallets.map((candidate) => candidate.id)];
+  const allDisplayedSelected = displayedWalletIds.length > 0 && displayedWalletIds.every((id) => selectedWalletIds.includes(id));
+  const toggleWalletSelection = (walletId: string) => setSelectedWalletIds((current) => current.includes(walletId)
+    ? Object.freeze(current.filter((id) => id !== walletId))
+    : Object.freeze([...current, walletId]));
+  const toggleAllDisplayed = () => setSelectedWalletIds((current) => allDisplayedSelected
+    ? Object.freeze(current.filter((id) => !displayedWalletIds.includes(id)))
+    : Object.freeze([...new Set([...current, ...displayedWalletIds])]));
+  const openWalletInventory = () => {
+    window.history.pushState({}, "", "/wallets");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
+  const openSniperTasks = () => {
+    window.history.pushState({}, "", "/sniper");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
 
   return (
     <div className="screen screen--edge trading-terminal-screen">
@@ -510,14 +537,18 @@ export function TradingTerminalScreen() {
           <Segmented value={filter} onChange={setFilter} ariaLabel="Token feed filter" options={[{ value: "new", label: "New" }, { value: "moving", label: "Moving" }, { value: "liquid", label: "Liquid" }, { value: "pump", label: "Pump" }]} />
           <div className="terminal-feed__labels"><span>Token</span><span>Price / age</span><span>5m / vol</span></div>
           <div className="terminal-feed__body">
-            {!live ? <EmptyState icon={<Radio size={21} />} title="Mainnet feed paused" description="Select Solana Mainnet to load current Jupiter-indexed pools." /> : recent.isLoading ? <div className="terminal-loading"><LoaderCircle className="spin" size={18} /> Loading live pools…</div> : recent.error ? <EmptyState icon={<AlertTriangle size={21} />} title="Provider unavailable" description={recent.error.message} action={<Button size="sm" onClick={() => void recent.refetch()}>Retry</Button>} /> : visibleTokens.length === 0 ? <EmptyState icon={<Search size={21} />} title="No matches" description="Change the filter or search a mint." /> : visibleTokens.map((token) => <TokenFeedRow key={token.id} token={token} active={token.id === selected?.id} disabled={settling} onSelect={() => setSelectedMint(token.id)} />)}
+            {!live ? <EmptyState icon={<Radio size={21} />} title="Mainnet feed paused" description="Select Solana Mainnet to load current Jupiter-indexed pools." /> : recent.isLoading ? <div className="terminal-loading"><LoaderCircle className="spin" size={18} /> Loading live pools…</div> : recent.error && !recent.data?.length ? <EmptyState icon={<AlertTriangle size={21} />} title="Provider unavailable" description={recent.error.message} action={<Button size="sm" onClick={() => void recent.refetch()}>Retry</Button>} /> : visibleTokens.length === 0 ? <EmptyState icon={<Search size={21} />} title="No matches" description="Change the filter or search a mint." /> : visibleTokens.map((token) => <TokenFeedRow key={token.id} token={token} active={token.id === selected?.id} disabled={settling} onSelect={() => setSelectedMint(token.id)} />)}
           </div>
-          <footer><span>Jupiter Tokens API</span><strong>{recent.dataUpdatedAt ? `updated ${Math.max(0, Math.floor((Date.now() - recent.dataUpdatedAt) / 1_000))}s ago` : "not loaded"}</strong></footer>
+          <footer><span>Jupiter Tokens API</span><strong>{recent.error && recent.data?.length ? "cached · provider retrying" : recent.dataUpdatedAt ? `updated ${Math.max(0, Math.floor((Date.now() - recent.dataUpdatedAt) / 1_000))}s ago` : "not loaded"}</strong></footer>
         </aside>
 
         <main className="terminal-market">
-          <div className="terminal-market__toolbar"><div><button type="button" className="is-active">Live</button><button type="button" disabled>1m</button><button type="button" disabled>5m</button></div><span><CircleDollarSign size={13} /> USD market price · no synthetic candles</span></div>
-          <MarketChart points={selected ? observations[selected.id] ?? [] : []} trades={stream.trades} symbol={selected?.symbol ?? "TOKEN"} />
+          <div className="terminal-market__toolbar">
+            <div>{([{ value: 1, label: "1s" }, { value: 15, label: "15s" }, { value: 60, label: "1m" }, { value: 300, label: "5m" }] as const).map((option) => <button type="button" key={option.value} className={candleInterval === option.value ? "is-active" : ""} onClick={() => setCandleInterval(option.value)}>{option.label}</button>)}</div>
+            <span><BarChart3 size={13} /> Live OHLC · observed data only</span>
+            <button type="button" className="terminal-layout-reset" onClick={resetTerminalPanelLayout} title="Reset floating panels"><Move size={13} /> Reset panels</button>
+          </div>
+          <LiveCandlestickChart observations={selected ? observations[selected.id] ?? [] : []} trades={stream.trades} symbol={selected?.symbol ?? "TOKEN"} interval={candleInterval} />
           <div className="terminal-market__facts">
             <div><span>Buys / sells 5m</span><strong>{selected?.stats5m?.numBuys ?? "—"} / {selected?.stats5m?.numSells ?? "—"}</strong></div>
             <div><span>Traders 5m</span><strong>{selected?.stats5m?.numTraders ?? "—"}</strong></div>
@@ -529,52 +560,117 @@ export function TradingTerminalScreen() {
         <PumpTape trades={stream.trades} status={stream.status} token={selected} />
       </div>
 
-      <section className={`terminal-trade-dock${prepared ? " has-quote" : ""}`}>
-        <div className="terminal-order-card">
-          <header><div><ArrowDownUp size={16} /><strong>Direct trade</strong></div><Badge tone="good">0 bps platform</Badge></header>
-          <Segmented value={direction} onChange={(value) => { if (settling) return; invalidateQuote(); setDirection(value); }} ariaLabel="Trade direction" options={[{ value: "buy", label: "Buy" }, { value: "sell", label: "Sell" }]} />
-          {direction === "buy" ? <Field label="Spend" hint="Exact SOL input; network, priority and protocol fees remain visible."><div className="input-unit"><Input aria-label="Spend amount" inputMode="decimal" value={amount} disabled={settling} onChange={(event) => { invalidateQuote(); setAmount(event.target.value); }} /><span>SOL</span></div></Field> : <Field label="Sell amount" hint="Read from the connected wallet at quote time."><Segmented value={String(sellPercentage)} onChange={(value) => { if (settling) return; invalidateQuote(); setSellPercentage(Number(value)); }} ariaLabel="Sell percentage" options={[{ value: "2500", label: "25%" }, { value: "5000", label: "50%" }, { value: "7500", label: "75%" }, { value: "10000", label: "100%" }]} /></Field>}
-          {direction === "buy" ? <div className="quick-amounts" aria-label="Quick SOL amounts">{["0.02", "0.05", "0.1", "0.25"].map((value) => <button type="button" key={value} disabled={settling} onClick={() => { invalidateQuote(); setAmount(value); }}>{value}</button>)}</div> : null}
-          <div className="terminal-order-grid"><Field label="Slippage"><div className="input-unit"><Input aria-label="Slippage BPS" type="number" min="1" max="5000" value={slippageBps} disabled={settling} onChange={(event) => { invalidateQuote(); setSlippageBps(Math.min(5_000, Math.max(1, Math.trunc(Number(event.target.value) || 1)))); }} /><span>bps</span></div></Field><Field label="Priority"><Select aria-label="Priority profile" value={priorityProfile} disabled={settling} onChange={(event) => { invalidateQuote(); setPriorityProfile(event.target.value as PriorityProfile); }}><option value="medium">Medium</option><option value="high">High</option><option value="veryHigh">Very high</option></Select></Field></div>
-          <Toggle checked={fastMode} onCheckedChange={(value) => { if (settling) return; invalidateQuote(); setFastMode(value); }} label="Fast route build" description="Still simulates unsigned and signed transactions before submission." />
-          <Button variant="primary" size="lg" className="terminal-quote-button" disabled={busy || !live || !selected || !wallet} onClick={() => void prepare()}>{phase === "quoting" ? <LoaderCircle className="spin" size={17} /> : <Zap size={17} />} {phase === "ready" ? "Refresh quote" : "Build & simulate"}</Button>
-          {!wallet ? <p className="terminal-wallet-note"><WalletCards size={14} /> Connect a Wallet Standard signer from the header. No keys enter Sunder.</p> : null}
-        </div>
+      <div className="terminal-floating-layer" aria-label="Movable trading workspace">
+        <FloatingPanel
+          id="trade"
+          className="terminal-trade-panel"
+          title={<><ArrowDownUp size={15} /><strong>Trade {selected?.symbol ?? "token"}</strong></>}
+          action={<Badge tone="good">0% Sunder fee</Badge>}
+        >
+          <div className="terminal-floating-panel__body">
+            <Segmented value={direction} onChange={(value) => { if (settling) return; invalidateQuote(); setDirection(value); }} ariaLabel="Trade direction" options={[{ value: "buy", label: "Buy" }, { value: "sell", label: "Sell" }]} />
+            <div className="terminal-trade-modes" role="tablist" aria-label="Order type">
+              {(["market", "limit", "advanced"] as const).map((mode) => <button key={mode} type="button" role="tab" aria-selected={tradeMode === mode} className={tradeMode === mode ? "is-active" : ""} onClick={() => { invalidateQuote(); setTradeMode(mode); }}>{mode === "advanced" ? "Adv." : mode[0]!.toUpperCase() + mode.slice(1)}</button>)}
+            </div>
 
-        <div className="terminal-quote-card">
-          <header><div><ShieldCheck size={16} /><strong>Cost & receipt truth</strong></div><Badge tone={phase === "confirmed" ? "good" : phase === "failed" ? "bad" : phase === "ready" ? "accent" : "neutral"}>{phase.replaceAll("-", " ")}</Badge></header>
-          {prepared ? <div className="terminal-quote-rows">
-            <div><span>Route</span><strong>{prepared.build.routePlan.map((step) => step.swapInfo.label).join(" → ")}</strong></div>
-            <div><span>Expected output</span><strong>{expectedOutput} {direction === "buy" ? selected?.symbol : "SOL"}</strong></div>
-            <div><span>Minimum received</span><strong>{minimumOutput} {direction === "buy" ? selected?.symbol : "SOL"}</strong></div>
-            <div><span>Network + priority estimate</span><strong>{formatSol(prepared.estimatedNetworkFeeLamports)}</strong></div>
-            <div><span>Protocol / LP fee</span><strong>Included in route output</strong></div>
-            <div><span>Sunder platform fee</span><strong className="is-positive">0 SOL · 0 bps</strong></div>
-            {direction === "buy" ? <div><span>1% venue reference</span><strong className="is-negative">{formatSol(referenceVenueFee)} not charged</strong></div> : null}
-            <div><span>Quote blockhash</span><strong>{shorten(prepared.recentBlockhash, 7, 7)}</strong></div>
-          </div> : <div className="terminal-quote-empty"><Info size={20} /><div><strong>No simulated quote</strong><span>Build uses Jupiter platformFeeBps=0, then RPC simulation. The wallet is asked only after that passes.</span></div></div>}
-          {error ? <div className="terminal-error" role="alert"><AlertTriangle size={16} /><span>{error}</span></div> : null}
-          {prepared && phase !== "confirmed" ? <Button variant="primary" size="lg" disabled={busy || phase !== "ready"} onClick={() => void execute()}><WalletCards size={17} /> Sign and submit</Button> : null}
-          {receipt ? <div className="terminal-receipt"><CheckCircle2 size={20} /><div><strong>Canonical RPC confirmation</strong><span>Slot {receipt.slot.toLocaleString()} · wallet SOL delta {formatSol(receipt.walletSolDeltaLamports)}</span><a href={explorerTransactionUrl(receipt.signature)} target="_blank" rel="noreferrer">Open transaction <ExternalLink size={12} /></a></div></div> : null}
-        </div>
+            {tradeMode === "limit" ? (
+              <div className="terminal-mode-lock"><LockKeyhole size={17} /><div><strong>Persistent limit route</strong><span>Arm price rules in Sniper after its signer/RPC readiness gates pass. No browser order is faked.</span></div><button type="button" onClick={() => { window.history.pushState({}, "", "/sniper"); window.dispatchEvent(new PopStateEvent("popstate")); }}>Open Sniper</button></div>
+            ) : (
+              <>
+                {direction === "buy" ? <Field label="Amount / wallet"><div className="input-unit"><Input aria-label="Spend amount in SOL per wallet" inputMode="decimal" value={amount} disabled={settling} onChange={(event) => { invalidateQuote(); setAmount(event.target.value); }} /><span>SOL</span></div></Field> : <Field label="Sell amount / wallet"><Segmented value={String(sellPercentage)} onChange={(value) => { if (settling) return; invalidateQuote(); setSellPercentage(Number(value)); }} ariaLabel="Sell percentage per wallet" options={[{ value: "2500", label: "25%" }, { value: "5000", label: "50%" }, { value: "7500", label: "75%" }, { value: "10000", label: "100%" }]} /></Field>}
+                {direction === "buy" ? <div className="quick-amounts" aria-label="Quick SOL amounts">{["0.01", "0.05", "0.1", "0.25"].map((value) => <button type="button" key={value} disabled={settling} className={amount === value ? "is-active" : ""} onClick={() => { invalidateQuote(); setAmount(value); }}>{value}</button>)}</div> : null}
 
-        <div className="terminal-account-card">
-          <header><div><Crosshair size={16} /><strong>Sniper basket & net PnL</strong></div><Badge tone="warn">First {confirmedCap}</Badge></header>
-          <div className="terminal-cap"><span>Canonical entry cap</span><Segmented value={String(confirmedCap)} onChange={(value) => setConfirmedCap(Number(value))} ariaLabel="Confirmed entry cap" options={[{ value: "1", label: "1" }, { value: "2", label: "2" }, { value: "3", label: "3" }]} /></div>
-          <div className="terminal-wallet-basket">
-            <div><span className={wallet ? "is-ready" : ""}><WalletCards size={14} /></span><span><strong>{walletAddress ? shorten(walletAddress, 6, 5) : "Browser signer"}</strong><small>{wallet ? "Interactive signing available" : "Connect required"}</small></span><Badge tone={wallet ? "good" : "warn"}>{wallet ? "Signer" : "Missing"}</Badge></div>
-            {workspace.wallets.filter((candidate) => candidate.network === network).slice(0, 3).map((candidate) => <div key={candidate.id}><span><WalletCards size={14} /></span><span><strong>{candidate.name}</strong><small>{shorten(candidate.address)} · cannot sign</small></span><Badge tone="neutral">Watch only</Badge></div>)}
+                <div className="terminal-trade-settings">
+                  <Field label="Slippage"><div className="input-unit"><Input aria-label="Slippage percent" inputMode="decimal" value={slippagePercent} disabled={settling} onChange={(event) => { invalidateQuote(); setSlippagePercent(event.target.value); }} /><span>%</span></div></Field>
+                  <Field label="Priority"><Select aria-label="Priority profile" value={priorityProfile} disabled={settling} onChange={(event) => { invalidateQuote(); setPriorityProfile(event.target.value as PriorityProfile); }}><option value="medium">Medium</option><option value="high">High</option><option value="veryHigh">Very high</option></Select></Field>
+                  <Field label="MEV"><Select aria-label="MEV submission mode" value={mevMode} disabled={settling} onChange={(event) => { invalidateQuote(); setMevMode(event.target.value as typeof mevMode); }}><option value="standard">Standard RPC</option><option value="private">Private relay · locked</option></Select></Field>
+                </div>
+
+                {tradeMode === "advanced" ? <Toggle checked={fastMode} onCheckedChange={(value) => { if (settling) return; invalidateQuote(); setFastMode(value); }} label="Fast route build" description="Unsigned and signed simulations still run before submission." /> : null}
+                <div className="terminal-trade-wallet-state"><span><Users size={13} /> {selectedSigners.length} signing wallet{selectedSigners.length === 1 ? "" : "s"} selected</span><span>{selectedSignerBalanceLoading ? "Balance…" : formatSol(selectedSignerBalanceLamports, 4)}</span></div>
+
+                <Button variant="primary" size="lg" className="terminal-quote-button" disabled={busy || !live || !selected || selectedSigners.length === 0 || mevMode === "private" || confirmedBasket.length > 0} onClick={() => void prepare()}>{phase === "quoting" ? <LoaderCircle className="spin" size={17} /> : <Zap size={17} />} {phase === "ready" ? "Refresh basket" : `Build & simulate ${direction}${selectedSigners.length > 0 ? ` · ${selectedSigners.length}` : ""}`}</Button>
+                {walletRegistry.wallets.length === 0 ? <button type="button" className="terminal-connect-inline" onClick={() => openWalletControl("create")}><WalletCards size={14} /> Create / connect signer wallet</button> : selectedSigners.length === 0 ? <p className="terminal-wallet-note"><WalletCards size={14} /> Select at least one connected signer in the Wallets panel.</p> : <p className="terminal-wallet-note"><ShieldCheck size={14} /> Amount applies to each selected signer; every wallet confirms separately.</p>}
+
+                {prepared ? <div className="terminal-quote-rows terminal-quote-rows--compact">
+                  <div><span>Route</span><strong>{prepared.build.routePlan.map((step) => step.swapInfo.label).join(" → ")}</strong></div>
+                  <div><span>Expected</span><strong>{expectedOutput} {direction === "buy" ? selected?.symbol : "SOL"}</strong></div>
+                  <div><span>Minimum</span><strong>{minimumOutput} {direction === "buy" ? selected?.symbol : "SOL"}</strong></div>
+                  <div><span>Wallet transactions</span><strong>{preparedBasket.length}</strong></div>
+                  <div><span>Network + priority</span><strong>{formatSol(estimatedNetworkFeeLamports)}</strong></div>
+                  <div><span>Sunder fee</span><strong className="is-positive">0 SOL</strong></div>
+                  {direction === "buy" ? <div><span>1% competitor fee saved</span><strong className="is-positive">{formatSol(referenceVenueFee)}</strong></div> : null}
+                </div> : null}
+                {error ? <div className="terminal-error" role="alert"><AlertTriangle size={16} /><span>{error}</span></div> : null}
+                {pendingPreparedCount > 0 ? <Button variant="primary" size="lg" disabled={busy || (phase !== "ready" && phase !== "failed")} onClick={() => void execute()}><WalletCards size={17} /> {phase === "failed" ? `Retry ${pendingPreparedCount} pending` : `Sign ${pendingPreparedCount} and submit`}</Button> : null}
+                {latestConfirmed ? <div className="terminal-receipt"><CheckCircle2 size={20} /><div><strong>{confirmedBasket.length}/{preparedBasket.length} confirmed by RPC</strong><span>Latest slot {latestConfirmed.slot.toLocaleString()} · {formatSol(latestConfirmed.walletSolDeltaLamports)}</span><a href={explorerTransactionUrl(latestConfirmed.signature)} target="_blank" rel="noreferrer">Open latest receipt <ExternalLink size={12} /></a></div></div> : null}
+              </>
+            )}
+
+            <div className="terminal-presets"><button type="button" className={preset === "1" ? "is-active" : ""} onClick={() => setPreset("1")}>Preset 1</button><button type="button" className={preset === "2" ? "is-active" : ""} onClick={() => setPreset("2")}>Preset 2</button><button type="button" className={preset === "3" ? "is-active" : ""} onClick={() => setPreset("3")}>Preset 3</button></div>
+            <div className="terminal-token-info"><div><span>Top 10</span><strong>—</strong></div><div><span>Dev</span><strong>—</strong></div><div><span>Snipers</span><strong>—</strong></div><div><span>Holders</span><strong>{formatCompact(selected?.holderCount)}</strong></div><div><span>Liquidity</span><strong>{formatCompact(selected?.liquidity, "$")}</strong></div><div><span>Organic</span><strong>{selected?.organicScore === undefined ? "—" : selected.organicScore.toFixed(0)}</strong></div></div>
           </div>
-          <p className="terminal-basket-note">{basket ? `${basket.steps.length} signing-capable wallet; ${basket.exclusions.length} watch-only/excess wallet(s) excluded. Browser approval is required for each interactive transaction.` : "Persistent first-three execution needs separately configured signer policies; public watch addresses are never treated as signers."}</p>
-          <div className="terminal-pnl">
-            <div><span>Confirmed net SOL flow</span><strong className={(position?.confirmedNetSolFlowLamports ?? 0n) >= 0n ? "is-positive" : "is-negative"}>{position ? formatSol(position.confirmedNetSolFlowLamports) : "—"}</strong></div>
-            <div><span>Realized net PnL</span><strong className={(position?.realizedNetPnlLamports ?? 0n) >= 0n ? "is-positive" : "is-negative"}>{position ? formatSol(position.realizedNetPnlLamports) : "—"}</strong></div>
-            <div><span>Tracked cost basis</span><strong>{position ? formatSol(position.trackedCostBasisLamports) : "—"}</strong></div>
-            <div><span>Confirmed fees + rent</span><strong>{selectedTrades.length ? formatSol(totalFees) : "—"}</strong></div>
+        </FloatingPanel>
+
+        <FloatingPanel
+          id="wallets"
+          className="terminal-wallet-panel"
+          title={<><WalletCards size={15} /><strong>Wallets</strong></>}
+          action={<Badge tone={selectedSigners.length > 0 ? "good" : "warn"}>{selectedSigners.length > 0 ? `${selectedSigners.length} signer${selectedSigners.length === 1 ? "" : "s"}` : "Select signer"}</Badge>}
+        >
+          <div className="terminal-floating-panel__body">
+            <div className="terminal-wallet-tabs"><button type="button" onClick={() => { setWalletTab("wallets"); setDirection("buy"); }}>Spot</button><button type="button" className={walletTab === "wallets" ? "is-active" : ""} onClick={() => setWalletTab("wallets")}>Wallets</button><button type="button" onClick={openSniperTasks}>Tasks</button><button type="button" className={walletTab === "history" ? "is-active" : ""} onClick={() => setWalletTab("history")}>History</button></div>
+            {walletTab === "wallets" ? <>
+              <div className="terminal-wallet-summary"><span><strong>{activeWalletCount} wallets active</strong><b>{selectedSignerBalanceLoading ? "Balance…" : formatSol(selectedBalanceLamports, 4)}</b></span><span>{selectedWalletIds.length} selected · {selectedSigners.length} can sign</span></div>
+              <div className="terminal-wallet-toolbar">
+                <label><Search size={13} /><input value={walletSearch} onChange={(event) => setWalletSearch(event.target.value)} placeholder="Name or address" /></label>
+                <button type="button" className={showWatchOnly ? "is-active" : ""} onClick={() => setShowWatchOnly((value) => !value)} title="Show watch-only wallets"><Eye size={14} /></button>
+                <button type="button" onClick={() => openWalletControl("create")}><Plus size={14} /> Create wallet</button>
+                <button type="button" onClick={openWalletInventory}><Settings2 size={14} /></button>
+              </div>
+              <div className="terminal-wallet-table">
+                <div className="terminal-wallet-table__head"><input type="checkbox" checked={allDisplayedSelected} onChange={toggleAllDisplayed} aria-label="Select all displayed wallets" /><span>Wallet</span><span>Balance</span><span>Holdings</span><span>Actions</span></div>
+                {walletRegistry.wallets.map((entry) => {
+                  const walletAddress = entry.session.account.address.toString();
+                  const selectedForTrading = selectedWalletIds.includes(entry.id);
+                  return <div className="terminal-wallet-row is-signer" key={entry.id}>
+                    <input type="checkbox" checked={selectedForTrading} onChange={() => toggleWalletSelection(entry.id)} aria-label={`Select ${entry.connectorName} signing wallet for trading`} />
+                    <span><i><WalletCards size={14} /></i><b>{entry.connectorName}<small>{shorten(walletAddress, 6, 5)}</small></b></span>
+                    <strong>{signerBalances[entry.id] === undefined ? "…" : formatSol(signerBalances[entry.id] ?? 0n, 4)}</strong>
+                    <Badge tone="good">Signer</Badge>
+                    <span><a href={explorerAddressUrl(walletAddress)} target="_blank" rel="noreferrer" aria-label={`Open ${entry.connectorName} wallet in explorer`}><ExternalLink size={13} /></a><button type="button" onClick={() => void walletRegistry.disconnect(entry.id)} aria-label={`Disconnect ${entry.connectorName}`}><Trash2 size={13} /></button></span>
+                  </div>;
+                })}
+                {walletRegistry.wallets.length === 0 ? <button type="button" className="terminal-wallet-connect-row" onClick={() => openWalletControl("create")}><Plus size={15} /><span><strong>Create a signing wallet</strong><small>Created in Phantom, Solflare or Backpack · then auto-selected</small></span></button> : null}
+                {visibleWallets.map((candidate) => <div className="terminal-wallet-row" key={candidate.id}>
+                  <input type="checkbox" checked={selectedWalletIds.includes(candidate.id)} onChange={() => toggleWalletSelection(candidate.id)} aria-label={`Select ${candidate.name} for monitoring`} />
+                  <span><i><Eye size={14} /></i><b>{candidate.name}<small>{shorten(candidate.address, 6, 5)}</small></b></span>
+                  <strong>{watchBalances[candidate.id] === undefined ? "—" : formatSol(watchBalances[candidate.id] ?? 0n, 4)}</strong>
+                  <Badge tone="neutral">Watch</Badge>
+                  <span><a href={explorerAddressUrl(candidate.address)} target="_blank" rel="noreferrer" aria-label={`Open ${candidate.name} in explorer`}><ExternalLink size={13} /></a><button type="button" onClick={() => workspace.removeWallet(candidate.id)} aria-label={`Remove ${candidate.name}`}><Trash2 size={13} /></button></span>
+                </div>)}
+                {walletRegistry.wallets.length === 0 && visibleWallets.length === 0 ? <div className="terminal-wallet-empty"><WalletCards size={18} /><span>No wallet connected. Add a self-custody signer without importing keys.</span></div> : null}
+              </div>
+              <p className="terminal-wallet-safety"><ShieldCheck size={13} /> Checked watch-only rows are tracked, never signed. Trades fan out only to selected connected signers.</p>
+              <div className="terminal-pnl">
+                <div><span>Confirmed net SOL flow</span><strong className={(position?.confirmedNetSolFlowLamports ?? 0n) >= 0n ? "is-positive" : "is-negative"}>{position ? formatSol(position.confirmedNetSolFlowLamports) : "—"}</strong></div>
+                <div><span>Realized net PnL</span><strong className={(position?.realizedNetPnlLamports ?? 0n) >= 0n ? "is-positive" : "is-negative"}>{position ? formatSol(position.realizedNetPnlLamports) : "—"}</strong></div>
+                <div><span>Tracked cost basis</span><strong>{position ? formatSol(position.trackedCostBasisLamports) : "—"}</strong></div>
+                <div><span>Confirmed fees + rent</span><strong>{selectedTrades.length ? formatSol(totalFees) : "—"}</strong></div>
+              </div>
+              <p className="terminal-pnl-note">PnL uses exact confirmed wallet deltas; unvalued inventory is never reported as realized profit.</p>
+            </> : <div className="terminal-wallet-history" aria-label="Wallet-linked history">
+              <header><span><History size={14} /><strong>Wallet-linked history</strong></span><Badge tone="neutral">{walletHistory.length} records</Badge></header>
+              {walletHistory.length === 0 ? <div className="terminal-wallet-history__empty"><History size={19} /><strong>No wallet history yet</strong><span>Connecting a real signer or receiving a canonical transaction result creates a browser-local record.</span></div> : walletHistory.map((entry) => <div className="terminal-wallet-history__row" key={entry.id}>
+                <span className={`status-dot status-dot--${entry.state}`} />
+                <span><strong>{entry.action}</strong><small>{entry.detail}</small><time>{formatHistoryTime(entry.at)}</time></span>
+                {entry.signature ? <a href={explorerTransactionUrl(entry.signature)} target="_blank" rel="noreferrer" aria-label="Open confirmed transaction"><ExternalLink size={13} /></a> : <Badge tone={entry.state === "confirmed" ? "good" : entry.state === "failed" ? "bad" : "neutral"}>{entry.state}</Badge>}
+              </div>)}
+              <p><ShieldCheck size={13} /> Public connector metadata and confirmed receipts only; no private keys are stored.</p>
+            </div>}
           </div>
-          <p className="terminal-pnl-note">Net means exact confirmed wallet deltas. Unvalued holdings are excluded; {position?.hasUntrackedInventory ? "untracked inventory was detected, so realized PnL is partial." : "no estimated profit is presented as realized."}</p>
-        </div>
-      </section>
+        </FloatingPanel>
+      </div>
     </div>
   );
 }
