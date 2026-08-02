@@ -24,7 +24,7 @@ This matrix distinguishes implemented code from configured infrastructure and in
 - Local draft/project/watch-wallet/audit workflows with no secret storage or fake on-chain state.
 - Independent engine, Solana/EVM adapters, relay routing, retry, risk and confirmation tests.
 - Browser connect/balance/simulation/sign/confirmation code paths when a compatible wallet is present.
-- Solana Mainnet live recent-pool feed, confirmed Pump trade tape, direct zero-Sunder-fee Jupiter build/simulation/sign/submission path and exact confirmed wallet-delta ledger.
+- Solana Mainnet live recent-pool feed through Jupiter's anonymous public-lite host, confirmed Pump trade tape, direct zero-Sunder-fee Jupiter build/simulation/sign/submission path and exact confirmed wallet-delta ledger. The anonymous discovery feed is best-effort; a project-scoped server-side Jupiter key is still required before claiming a data-provider SLA.
 - A live Mainnet read-only acceptance run used a current Pump event and active public taker to build and simulate a `0.001 SOL` buy twice through the Jupiter `Pump.fun` route. It did not request a signature, submit a transaction, or spend funds.
 - Per-arm canonical execution cap of one to three confirmations and deterministic signer-aware wallet-basket planning; watch-only addresses are excluded.
 - Fixed-supply ERC-20 bytecode generation and deployment encoding.

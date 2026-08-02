@@ -226,9 +226,12 @@ describe("live token and Pump event validation", () => {
       liquidity: 12_345,
       stats5m: { priceChange: 12, buyVolume: 500, sellVolume: 250 },
     }];
-    const fetcher = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
+    const fetcherMock = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
+    const fetcher = fetcherMock as unknown as typeof fetch;
     await expect(fetchRecentTokens(undefined, fetcher)).resolves.toHaveLength(1);
     await expect(searchTokenInformation(tokenMint, undefined, fetcher)).resolves.toMatchObject([{ symbol: "TEST" }]);
+    expect(fetcherMock).toHaveBeenNthCalledWith(1, "https://lite-api.jup.ag/tokens/v2/recent", expect.objectContaining({ credentials: "omit" }));
+    expect(fetcherMock).toHaveBeenNthCalledWith(2, `https://lite-api.jup.ag/tokens/v2/search?query=${tokenMint}`, expect.objectContaining({ credentials: "omit" }));
     expect(safeTokenIcon(payload[0]?.icon)).toBe("https://cdn.example/token.png");
     expect(safeTokenIcon("javascript:alert(1)")).toBeUndefined();
   });

@@ -47,7 +47,7 @@ The browser verification path uses `@solana/client` and `@solana/react-hooks`: c
 
 The Solana Mainnet trading terminal is a separate interactive, wallet-owned path:
 
-- Jupiter Tokens V2 `recent`/`search` supplies real new-pool discovery and bounded market metadata; malformed individual records are discarded without fabricating replacements.
+- Jupiter Tokens V2 `recent`/`search` on the public-lite host supplies real new-pool discovery and bounded market metadata without exposing a developer key in browser code; malformed individual records are discarded without fabricating replacements. The anonymous feed is best-effort, while a server-side key-backed gateway is required for a production data SLA.
 - A confirmed `logsSubscribe` on the official Pump program address decodes the current official `TradeEvent` discriminator/prefix and filters the selected mint. This powers the live tape and exposes actual protocol/creator fee basis points. A live PublicNode A/B probe observed `98` matching program-stream events but `0` notifications when the `mentions` filter was changed to the event mint, because that mint is not reliably present in the outer transaction account list; the program subscription plus decoded-mint filter is therefore intentional.
 - Jupiter Swap V2 `build` is requested with wrapped SOL, the selected mint, an exact amount, the connected taker and `platformFeeBps=0`.
 - API instructions and lookup tables are validated with Zod, converted to a versioned transaction, and simulated without a signature to size compute units. A reduced compute limit is rebuilt and simulated exactly; if the maximum limit remains unchanged, the already-exact first simulation is reused.

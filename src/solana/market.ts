@@ -1,7 +1,10 @@
 import { getBase58Decoder, getBase64Codec, type Base64EncodedBytes } from "@solana/kit";
 import { z } from "zod";
 
-export const JUPITER_TOKENS_API = "https://api.jup.ag/tokens/v2";
+// The key-backed api.jup.ag gateway rejects anonymous browser traffic. Jupiter's
+// public-lite host serves the same Tokens V2 schema and keeps the read-only
+// discovery/search path usable without ever shipping an API key to the client.
+export const JUPITER_TOKENS_API = "https://lite-api.jup.ag/tokens/v2";
 export const PUMP_PROGRAM_ADDRESS = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const TRADE_EVENT_DISCRIMINATOR = Uint8Array.from([189, 219, 127, 211, 78, 230, 97, 238]);
 
