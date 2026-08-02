@@ -1,62 +1,61 @@
 # Sunder terminal design QA
 
-## Final comparison target
+## Comparison target and evidence
 
-- User-provided Axiom terminal reference: `artifacts/qa/axiom-terminal-trade-reference.png` (`1919 x 857`).
-- User-provided Axiom wallet reference: `artifacts/qa/axiom-wallets-reference.png` (`969 x 464`).
+- Source visual truth: `artifacts/qa/axiom-terminal-trade-reference.png` (`1919 x 857`) and `artifacts/qa/axiom-wallets-reference.png` (`969 x 464`).
 - Accepted Sunder product sources: `docs/design/sunder-desktop-source.png` and `docs/design/sunder-mobile-source.png`.
-- Final desktop terminal: `artifacts/qa/terminal-desktop-multiwallet-live-final.png` (`1908 x 832`).
-- Equal-viewport full comparison: `artifacts/qa/terminal-floating-panels-side-by-side-final.png` (`3816 x 832`).
-- Focused panel comparison: `artifacts/qa/terminal-floating-panels-focused-final.png` (`1814 x 600`).
-- Final wallet/history states: `artifacts/qa/terminal-wallet-history-final.png`, `artifacts/qa/terminal-create-wallet-modal-final.png`, `artifacts/qa/wallets-create-history-desktop-final.png`, and `artifacts/qa/wallets-history-desktop-final.png`.
-- Final mobile states: `artifacts/qa/terminal-mobile-top-multiwallet-final.png`, `artifacts/qa/terminal-mobile-chart-multiwallet-final.png`, `artifacts/qa/terminal-mobile-trade-multiwallet-final.png`, `artifacts/qa/terminal-mobile-wallet-multiwallet-final.png`, and `artifacts/qa/terminal-create-wallet-modal-mobile-final.png` (`390 x 844`).
+- Desktop implementation: `artifacts/qa/terminal-wallet-embedded-desktop-final.png` (`1280 x 633`, CSS viewport `1280 x 720`, DPR 1).
+- Focused wallet implementation: `artifacts/qa/terminal-wallet-embedded-focused-final.png` (`570 x 474`).
+- Same-input side-by-side wallet comparison: `artifacts/qa/terminal-wallet-embedded-side-by-side-final.png` (`1600 x 700`).
+- Corrected chart evidence: `artifacts/qa/terminal-chart-reserve-mcap-final.png` (`617 x 453`).
+- Export warning state: `artifacts/qa/terminal-wallet-export-warning-final.png` (`1280 x 633`); no private key is visible in the artifact.
+- Mobile wallet implementation: `artifacts/qa/terminal-wallet-embedded-mobile-final.png` (`390 x 844`) captured at DPR 1.
 
-The Axiom capture is used for component anatomy and density, not copied branding. Sunder retains its own navigation, colors, truthful execution labels and self-custody boundary.
+The Axiom captures define component anatomy, density and trading conventions; Sunder retains its own brand, zero-platform-fee disclosure, confirmation semantics and security boundary.
 
-## Result
+## Findings
 
-There are no remaining actionable P0, P1 or P2 visual findings.
+There are no remaining actionable P0, P1 or P2 findings.
 
-- Desktop matches the source hierarchy: dense token strip, live launch scanner, candlestick workspace, trade tape, Buy/Sell panel and compact multi-wallet panel.
-- Trade and wallet panels can be dragged independently by their headers, are clamped on-screen, preserve position and stacking order across reload, support keyboard arrow movement, and have a visible Reset panels action.
-- Mobile switches to a natural stacked layout. The scanner reserves a fixed responsive height so the first live provider response does not move the chart or panels.
-- The wallet panel has working Wallets and History states. Tasks opens the Sniper task console; Spot returns to the buy workspace.
-- `Create wallet` opens a responsive provider-owned self-custody flow. With no extension installed, the QA browser honestly showed official Phantom, Solflare and Backpack install/create actions instead of a fake account.
-- The dedicated Wallets screen shows connected signers, live balance status, watch inventory and wallet-linked history.
+- Fonts and typography: compact monospaced labels, numeric alignment, uppercase table headers and hierarchy match the dense terminal source. Micro-token prices now use the familiar compact `0.0ₙ` notation; the chart uses readable `$K` market-cap labels instead of scientific notation.
+- Spacing and layout rhythm: the wallet tabs, summary, search/create toolbar, select-all row, signer rows and action column closely follow the Axiom inventory rhythm. The Sunder panel intentionally includes confirmed-flow/PnL blocks below the source table.
+- Colors and visual tokens: the source's near-black surfaces, thin dividers and restrained status color treatment are preserved with Sunder orange, mint and red semantic tokens.
+- Image and icon fidelity: token/provider images remain real remote assets; wallet, key, explorer and delete actions use the existing icon library. No placeholder or handcrafted SVG replaces a visible source asset.
+- Copy and content: `Create wallet` is immediate; each row has public address, confirmed SOL balance, signer state, export, explorer and delete actions. Security copy states browser-local encryption and backup risk without pretending cross-device custody.
 
-## Data and execution truthfulness
+## Comparison history
 
-- Market rows come from Jupiter Tokens V2 through the bounded same-origin cache/direct fallback.
-- Candles contain only observed Jupiter prices or confirmed Pump events; there is no synthetic historical series.
-- Pump tape links only decoded confirmed program events to Solscan.
-- Buy/Sell input uses familiar percent/SOL units. Basis points remain an internal conversion only.
-- Sunder platform fee is `0 bps`; network, Pump/AMM, priority, account-rent and optional relay fees remain visible.
-- A multi-signer basket builds and simulates one transaction per selected signer, requests each wallet signature separately, and reports success only after canonical RPC confirmation.
-- No funded Mainnet transaction was submitted during visual QA.
+### Iteration 1 — blocked
 
-## Interaction evidence
+- [P1] Candle direction and scale were misleading. Pump candles used average execution price, equal-second events were reversed, delayed slots could insert bars in the past, and tiny values rendered in scientific notation.
+- [P1] `Create wallet` opened provider guidance instead of creating the selected, tradable wallet row requested in the source flow.
 
-Browser: `agent-browser` against the loopback production Vite build.
+### Iteration 2 — passed
 
-- Live Solana Mainnet token discovery, token selection stability, New/Moving/Liquid/Pump filters, search, candle interval controls, chart pan/zoom/crosshair and Pump tape were exercised.
-- Buy and Sell modes, Market/Limit/Advanced, amount presets, sell percentages, slippage percentage, priority and MEV state were exercised.
-- Panel drag changed the trade-panel position; reload preserved it. Keyboard ArrowRight moved the focused panel by 12 pixels. Reset restored the non-overlapping default layout.
-- Wallets/History tabs and both Create wallet entry points were exercised.
-- A focused registry test proves that a Wallet Standard session appears after connection, persists only its public connector ID, and restores with `{ autoConnect: true, allowInteractiveFallback: false }`.
-- Desktop and mobile browser error collections were empty. Console collections were empty.
-- Desktop viewport: `scrollWidth = clientWidth = 1908`.
-- Mobile viewport: `scrollWidth = clientWidth = 390`.
+- Pump TradeEvent candles now use post-trade virtual-reserve spot price, order by timestamp then confirmed slot, reject delayed older slots at the live watermark, and anchor once to Jupiter's current USD market-cap index.
+- Visible terminal prices use compact crypto notation and the chart legend/axis use USD market cap; browser evidence contained no scientific-notation price labels.
+- `Create wallet` now generates a Solana Keypair client-side with no modal, AES-GCM encrypts the secret under a non-extractable device key in IndexedDB, inserts and auto-selects the row, refreshes its confirmed balance, and persists it across reload.
+- Two wallets were created in the browser flow. Both rows appeared, both were selected, Buy/Sell reported two signers, and the History tab contained two public `Embedded wallet created` entries.
+- Export was exercised through the warning dialog. The explicit Reveal action produced an 88-character Base58 value and Copy/Download controls; the value was neither printed nor captured. A unit test restored the matching address and produced a 64-byte transaction signature.
 
-The QA Chrome profile had no Wallet Standard extension and no funded signer. Therefore the release evidence intentionally contains no invented wallet row, balance, signature or transaction success. A real Phantom/Solflare/Backpack acceptance transaction requires the user's extension, funded public account and explicit in-wallet approval.
+## Interaction and browser evidence
 
-## Performance evidence
+- Browser: `agent-browser` against the loopback Vite application.
+- Desktop: create first wallet, create second wallet, auto-selection, Buy/Sell modes, percentage controls, export warning/reveal, reload persistence, wallet History, live balance state, market-cap legend and live Pump tape.
+- Mobile: `390 x 844`, natural stacked trade/wallet panels, immediate wallet creation, selection and no horizontal overflow.
+- Desktop reload result: `walletRows=2`, `selected=2`, no create dialog; single-wallet persistence was separately observed before the second create.
+- Mobile result: `walletRows=1`, `selected=1`, `dialog=false`, `scrollWidth=innerWidth=390`.
+- Fresh post-HMR desktop and mobile console collections contained no warning or error entries.
+- No funded Mainnet transaction was submitted during visual QA. Success remains impossible before canonical RPC confirmation.
 
-Loopback production-build measurements are VPS-local evidence, not an internet SLA. The scanner and token identity reserve their final geometry before provider data arrives, eliminating the material mobile layout shift found during the final pass. Exact final measurements and bundle sizes are recorded in `docs/PERFORMANCE.md`.
+## Focused comparison conclusion
+
+The focused side-by-side comparison shows the required Axiom anatomy: tab strip, active-wallet total, selected count, search, one-click create, selection checkboxes, wallet name/address, balance, holdings/signer status and row actions. Sunder's narrower floating panel is an intentional draggable-terminal adaptation, not missing functionality. Focused chart evidence shows chronological reserve-price candles and a normal `$19.5K–$26K` market-cap scale.
 
 ## Accepted P3 differences
 
-- Sunder does not reproduce Axiom custody, private-key export, proprietary branding or unrelated navigation.
-- Historical candles are limited to real observations available to the current deployment. A project-scoped OHLC indexer can increase history depth later without changing the chart or trade layout.
-- Browser-local connector/history persistence is not cross-device account storage.
+- Sunder does not reproduce Axiom branding, server custody, private-key import, proprietary historical indexer or unrelated navigation.
+- New Pump bonding-curve history is accumulated from confirmed live events in the current session; a project-scoped historical OHLC provider can deepen history later without changing the chart.
+- Embedded wallets persist only in the current browser profile. Users must export a backup before clearing site data; no cross-device account backend is claimed.
 
 final result: passed

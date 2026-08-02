@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { SOLANA_MAINNET_WS_URL } from "./client";
-import { fetchRecentTokens, parseTokenInformationList, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
+import { fetchRecentTokens, mergeConfirmedPumpTrade, parseTokenInformationList, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
 
 const RECENT_CACHE_KEY = "sunder:solana-recent-tokens:v1";
 const RECENT_CACHE_MAX_AGE_MS = 120_000;
@@ -96,7 +96,12 @@ export function usePumpTradeStream(input: {
         onDisconnect: scheduleRetry,
         onTrade: (trade) => {
           if (!active) return;
-          setTrades((current) => Object.freeze([trade, ...current.filter((item) => item.signature !== trade.signature)].slice(0, 80)));
+          setTrades((current) => {
+            // Confirmed websocket notifications are expected in slot order.
+            // Ignore a delayed event after a newer slot is already displayed
+            // so a bar never appears retroactively in the chart's past.
+            return mergeConfirmedPumpTrade(current, trade);
+          });
         },
       }).then((stop) => {
         if (!active) return void stop();

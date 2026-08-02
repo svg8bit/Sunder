@@ -1,13 +1,25 @@
 import type { WalletConnector, WalletSession } from "@solana/client";
 import { useWalletConnection } from "@solana/react-hooks";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  createEmbeddedWallet,
+  createEmbeddedWalletSession,
+  deleteEmbeddedWallet,
+  exportEmbeddedWalletPrivateKey,
+  listEmbeddedWallets,
+  type EmbeddedWalletMetadata,
+} from "../solana/embedded-wallet-vault";
 
 const STORAGE_KEY = "sunder:solana-signing-connectors:v1";
+export const SOLANA_SIGNER_AVAILABLE_EVENT = "sunder:solana-signer-available";
+export const SOLANA_SIGNER_SELECTION_STORAGE_KEY = "sunder:terminal-wallet-selection:v1";
 
 export interface ConnectedSolanaWallet {
   readonly id: string;
   readonly connectorId: string;
   readonly connectorName: string;
+  readonly kind: "wallet-standard" | "embedded";
+  readonly createdAt?: number;
   readonly session: WalletSession;
 }
 
@@ -15,14 +27,35 @@ interface SolanaWalletRegistryValue {
   readonly wallets: readonly ConnectedSolanaWallet[];
   readonly connectors: readonly WalletConnector[];
   readonly connectingConnectorId?: string;
+  readonly creatingEmbeddedWallet: boolean;
   readonly connect: (connectorId: string) => Promise<void>;
+  readonly createEmbedded: () => Promise<ConnectedSolanaWallet>;
   readonly disconnect: (walletId: string) => Promise<void>;
+  readonly removeEmbedded: (walletId: string) => Promise<void>;
+  readonly exportEmbedded: (walletId: string) => Promise<string>;
 }
 
 const SolanaWalletRegistryContext = createContext<SolanaWalletRegistryValue | null>(null);
 
 function walletId(connectorId: string, session: WalletSession): string {
   return `browser:${connectorId}:${session.account.address.toString()}`;
+}
+
+function announceSignerAvailable(id: string): void {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(SOLANA_SIGNER_SELECTION_STORAGE_KEY) ?? "[]");
+    const current = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+    window.localStorage.setItem(SOLANA_SIGNER_SELECTION_STORAGE_KEY, JSON.stringify([...new Set([...current, id])].slice(0, 100)));
+  } catch { /* Selection persistence is best-effort; the in-memory event still fires. */ }
+  window.dispatchEvent(new CustomEvent(SOLANA_SIGNER_AVAILABLE_EVENT, { detail: Object.freeze({ id }) }));
+}
+
+function forgetSignerSelection(id: string): void {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(SOLANA_SIGNER_SELECTION_STORAGE_KEY) ?? "[]");
+    const current = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+    window.localStorage.setItem(SOLANA_SIGNER_SELECTION_STORAGE_KEY, JSON.stringify(current.filter((value) => value !== id).slice(0, 100)));
+  } catch { /* Selection persistence is best-effort. */ }
 }
 
 function readConnectorIds(): readonly string[] {
@@ -38,11 +71,36 @@ function persistConnectorIds(ids: readonly string[]): void {
   try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify([...new Set(ids)].slice(0, 12))); } catch { /* Public connector metadata may fail to persist. */ }
 }
 
+function embeddedEntry(wallet: EmbeddedWalletMetadata): ConnectedSolanaWallet {
+  return Object.freeze({
+    id: wallet.id,
+    connectorId: wallet.id,
+    connectorName: wallet.label,
+    kind: "embedded",
+    createdAt: wallet.createdAt,
+    session: createEmbeddedWalletSession(wallet),
+  });
+}
+
 export function SolanaWalletRegistryProvider({ children }: { readonly children: ReactNode }) {
   const connection = useWalletConnection();
   const [sessions, setSessions] = useState<ReadonlyMap<string, WalletSession>>(() => new Map());
+  const [embeddedWallets, setEmbeddedWallets] = useState<readonly ConnectedSolanaWallet[]>([]);
   const [connectingConnectorId, setConnectingConnectorId] = useState<string>();
+  const [creatingEmbeddedWallet, setCreatingEmbeddedWallet] = useState(false);
   const reconnectStarted = useRef(false);
+  const embeddedCreationActive = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    void listEmbeddedWallets().then((wallets) => {
+      if (active) setEmbeddedWallets((current) => {
+        const loaded = wallets.map(embeddedEntry);
+        return Object.freeze([...current, ...loaded].filter((wallet, index, values) => values.findIndex((candidate) => candidate.id === wallet.id) === index));
+      });
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   const remember = useCallback((connectorId: string, session: WalletSession) => {
     setSessions((current) => {
@@ -101,12 +159,14 @@ export function SolanaWalletRegistryProvider({ children }: { readonly children: 
         ? await connector.connect({ allowInteractiveFallback: true })
         : await connection.connect(connectorId, { allowInteractiveFallback: true });
       remember(connectorId, session);
+      announceSignerAvailable(walletId(connectorId, session));
     } finally {
       setConnectingConnectorId(undefined);
     }
   }, [connectingConnectorId, connection, remember]);
 
   const disconnect = useCallback(async (id: string) => {
+    if (id.startsWith("embedded:")) return;
     const entry = [...sessions.entries()].find(([connectorId, session]) => walletId(connectorId, session) === id);
     if (!entry) return;
     const [connectorId, session] = entry;
@@ -118,22 +178,52 @@ export function SolanaWalletRegistryProvider({ children }: { readonly children: 
       return next;
     });
     persistConnectorIds(readConnectorIds().filter((candidate) => candidate !== connectorId));
+    forgetSignerSelection(id);
   }, [connection, sessions]);
 
-  const wallets = useMemo(() => Object.freeze([...sessions.entries()].map(([connectorId, session]) => Object.freeze({
+  const createEmbedded = useCallback(async () => {
+    if (embeddedCreationActive.current) throw new Error("Wallet creation is already in progress.");
+    embeddedCreationActive.current = true;
+    setCreatingEmbeddedWallet(true);
+    try {
+      const entry = embeddedEntry(await createEmbeddedWallet());
+      setEmbeddedWallets((current) => Object.freeze([entry, ...current]));
+      announceSignerAvailable(entry.id);
+      return entry;
+    } finally {
+      embeddedCreationActive.current = false;
+      setCreatingEmbeddedWallet(false);
+    }
+  }, []);
+
+  const removeEmbedded = useCallback(async (id: string) => {
+    await deleteEmbeddedWallet(id);
+    setEmbeddedWallets((current) => Object.freeze(current.filter((wallet) => wallet.id !== id)));
+    forgetSignerSelection(id);
+  }, []);
+
+  const exportEmbedded = useCallback((id: string) => exportEmbeddedWalletPrivateKey(id), []);
+
+  const standardWallets = useMemo(() => Object.freeze([...sessions.entries()].map(([connectorId, session]) => Object.freeze({
     id: walletId(connectorId, session),
     connectorId,
     connectorName: connection.connectors.find((connector) => connector.id === connectorId)?.name ?? session.connector.name,
+    kind: "wallet-standard" as const,
     session,
   }))), [connection.connectors, sessions]);
+  const wallets = useMemo(() => Object.freeze([...embeddedWallets, ...standardWallets]), [embeddedWallets, standardWallets]);
 
   const value = useMemo<SolanaWalletRegistryValue>(() => ({
     wallets,
     connectors: connection.connectors,
     connectingConnectorId,
+    creatingEmbeddedWallet,
     connect,
+    createEmbedded,
     disconnect,
-  }), [connect, connectingConnectorId, connection.connectors, disconnect, wallets]);
+    removeEmbedded,
+    exportEmbedded,
+  }), [connect, connectingConnectorId, connection.connectors, createEmbedded, creatingEmbeddedWallet, disconnect, exportEmbedded, removeEmbedded, wallets]);
 
   return <SolanaWalletRegistryContext.Provider value={value}>{children}</SolanaWalletRegistryContext.Provider>;
 }

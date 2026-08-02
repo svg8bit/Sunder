@@ -24,11 +24,11 @@ function finitePositive(value: number): boolean {
 }
 
 export function aggregateLiveCandles(
-  values: readonly { readonly at: number; readonly price: number; readonly volume?: number }[],
+  values: readonly { readonly at: number; readonly order?: number; readonly price: number; readonly volume?: number }[],
   intervalSeconds: CandleInterval,
 ): readonly LiveCandle[] {
   const buckets = new Map<number, { open: number; high: number; low: number; close: number; volume: number }>();
-  for (const value of [...values].sort((left, right) => left.at - right.at)) {
+  for (const value of [...values].sort((left, right) => left.at - right.at || (left.order ?? 0) - (right.order ?? 0))) {
     if (!Number.isFinite(value.at) || !finitePositive(value.price)) continue;
     const bucket = Math.floor(value.at / (intervalSeconds * 1_000)) * intervalSeconds;
     const existing = buckets.get(bucket);
@@ -44,11 +44,17 @@ export function aggregateLiveCandles(
   return Object.freeze([...buckets.entries()].map(([time, candle]) => Object.freeze({ time: time as UTCTimestamp, ...candle })));
 }
 
-function formatPrice(value: number): string {
+function formatPlainDecimal(value: number): string {
   if (!Number.isFinite(value)) return "—";
   if (value === 0) return "0";
-  if (Math.abs(value) < 0.0001) return value.toExponential(3);
-  return new Intl.NumberFormat("en", { maximumFractionDigits: 8 }).format(value);
+  if (Math.abs(value) >= 1_000) return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(value);
+  if (Math.abs(value) >= 0.01) return new Intl.NumberFormat("en", { maximumFractionDigits: 6 }).format(value);
+  return value.toFixed(12).replace(/0+$/, "");
+}
+
+function formatMarketCap(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return `$${new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(value)}`;
 }
 
 function showRecentWindow(chart: IChartApi, candleCount: number): void {
@@ -59,24 +65,40 @@ function showRecentWindow(chart: IChartApi, candleCount: number): void {
 }
 
 interface LiveCandlestickChartProps {
+  readonly instrumentId: string;
   readonly observations: readonly LivePriceObservation[];
   readonly trades: readonly PumpTrade[];
   readonly symbol: string;
   readonly interval: CandleInterval;
+  readonly marketCapUsd?: number;
+  readonly spotPriceUsd?: number;
 }
 
-export function LiveCandlestickChart({ observations, trades, symbol, interval }: LiveCandlestickChartProps) {
+type PumpAnchor = Readonly<{ instrumentId: string; factor: number; metric: "market-cap" | "usd" }>;
+
+export function LiveCandlestickChart({ instrumentId, observations, trades, symbol, interval, marketCapUsd, spotPriceUsd }: LiveCandlestickChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | undefined>(undefined);
   const candleSeries = useRef<ISeriesApi<"Candlestick"> | undefined>(undefined);
   const volumeSeries = useRef<ISeriesApi<"Histogram"> | undefined>(undefined);
-  const source = trades.some((trade) => finitePositive(trade.priceSol)) ? "pump" : "jupiter";
+  const pumpTrades = useMemo(() => trades
+    .filter((trade) => finitePositive(trade.priceSol))
+    .sort((left, right) => left.timestamp - right.timestamp || left.slot - right.slot || left.signature.localeCompare(right.signature)), [trades]);
+  const source = pumpTrades.length > 0 ? "pump" : "jupiter";
+  const pumpAnchor = useRef<PumpAnchor | undefined>(undefined);
+  if (pumpAnchor.current?.instrumentId !== instrumentId) pumpAnchor.current = undefined;
+  if (!pumpAnchor.current && pumpTrades[0]) {
+    if (finitePositive(marketCapUsd ?? 0)) pumpAnchor.current = Object.freeze({ instrumentId, factor: marketCapUsd! / pumpTrades[0].priceSol, metric: "market-cap" });
+    else if (finitePositive(spotPriceUsd ?? 0)) pumpAnchor.current = Object.freeze({ instrumentId, factor: spotPriceUsd! / pumpTrades[0].priceSol, metric: "usd" });
+  }
+  const impliedSupply = finitePositive(marketCapUsd ?? 0) && finitePositive(spotPriceUsd ?? 0) ? marketCapUsd! / spotPriceUsd! : undefined;
+  const metric: "market-cap" | "usd" | "sol" = source === "pump" ? pumpAnchor.current?.metric ?? "sol" : impliedSupply ? "market-cap" : "usd";
   const candles = useMemo(() => aggregateLiveCandles(
     source === "pump"
-      ? trades.map((trade) => ({ at: trade.timestamp, price: trade.priceSol, volume: Number(trade.solAmountLamports) / 1_000_000_000 }))
-      : observations.map((point) => ({ at: point.at, price: point.price })),
+      ? pumpTrades.map((trade) => ({ at: trade.timestamp, order: trade.slot, price: trade.priceSol * (pumpAnchor.current?.factor ?? 1), volume: Number(trade.solAmountLamports) / 1_000_000_000 }))
+      : observations.map((point) => ({ at: point.at, price: point.price * (impliedSupply ?? 1) })),
     interval,
-  ), [interval, observations, source, trades]);
+  ), [impliedSupply, interval, observations, pumpTrades, source]);
   const latestCandles = useRef(candles);
   latestCandles.current = candles;
   const hasFitted = useRef(false);
@@ -101,6 +123,7 @@ export function LiveCandlestickChart({ observations, trades, symbol, interval }:
         handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
         handleScroll: { horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true, vertTouchDrag: false },
       });
+      const formatter = metric === "market-cap" ? formatMarketCap : (value: number) => `${metric === "usd" ? "$" : ""}${formatPlainDecimal(value)}`;
       const nextCandles = nextChart.addSeries(CandlestickSeries, {
         upColor: "#24d3a2",
         downColor: "#ff4f71",
@@ -108,7 +131,7 @@ export function LiveCandlestickChart({ observations, trades, symbol, interval }:
         borderDownColor: "#ff4f71",
         wickUpColor: "#24d3a2",
         wickDownColor: "#ff4f71",
-        priceFormat: { type: "custom", formatter: formatPrice, minMove: 0.0000000001 },
+        priceFormat: { type: "custom", formatter, minMove: metric === "market-cap" ? 1 : 0.000000000001 },
       });
       const nextVolume = nextChart.addSeries(HistogramSeries, {
         priceFormat: { type: "volume" },
@@ -136,7 +159,7 @@ export function LiveCandlestickChart({ observations, trades, symbol, interval }:
       chart.current = undefined;
       hasFitted.current = false;
     };
-  }, [interval]);
+  }, [interval, metric]);
 
   useEffect(() => {
     candleSeries.current?.setData([...candles]);
@@ -152,18 +175,19 @@ export function LiveCandlestickChart({ observations, trades, symbol, interval }:
   const latest = candles.at(-1);
   const previous = candles.length > 1 ? candles.at(-2) : undefined;
   const change = latest && previous && previous.close > 0 ? ((latest.close - previous.close) / previous.close) * 100 : undefined;
-  const unit = source === "pump" ? "SOL" : "USD";
+  const unit = metric === "market-cap" ? "MCap" : metric === "usd" ? "USD" : "SOL";
+  const formatValue = metric === "market-cap" ? formatMarketCap : (value: number) => `${metric === "usd" ? "$" : ""}${formatPlainDecimal(value)}`;
   const style = { "--chart-change-color": (change ?? 0) >= 0 ? "var(--mint)" : "var(--red)" } as CSSProperties;
 
   return (
     <figure className="market-chart market-chart--candles" style={style}>
       <div className="market-chart__legend">
         <span><i /> {symbol}/{unit} · {source === "pump" ? "confirmed Pump trades" : "live Jupiter observations"}</span>
-        <b>{latest ? `${formatPrice(latest.close)} ${unit}` : "Waiting for live prices"}{change === undefined ? "" : ` · ${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</b>
+        <b>{latest ? `${formatValue(latest.close)}${metric === "sol" ? ` ${unit}` : ""}` : "Waiting for live prices"}{change === undefined ? "" : ` · ${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</b>
       </div>
       <div className="market-chart__canvas" ref={container} role="img" aria-label={`${symbol} live ${interval}-second candlestick chart built only from observed provider data`} />
       {candles.length === 0 ? <div className="market-chart__empty"><BarChart3 size={22} /><strong>Waiting for first live observation</strong><span>No historical candles are fabricated.</span></div> : null}
-      <figcaption>Live OHLC only: {source === "pump" ? `${trades.length} confirmed on-chain Pump events` : `${observations.length} Jupiter price samples`}. Pan, zoom and crosshair are interactive.</figcaption>
+      <figcaption>Live OHLC only: {source === "pump" ? `${pumpTrades.length} confirmed Pump reserve-price events${metric === "market-cap" ? "; market-cap scale anchored once to the current Jupiter index" : ""}` : `${observations.length} Jupiter price samples`}. Pan, zoom and crosshair are interactive.</figcaption>
     </figure>
   );
 }

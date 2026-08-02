@@ -60,7 +60,7 @@ Observed platforms: Pump, Bonk, Bonkers, LaunchLab, Bags, Printr. Classic SPL an
 - Project Wallets: DEV, Create, Import, Export, Fund, Collect, inventory, select all/page, swap, delete.
 - Global Wallets: groups, Warmup, Dev Warmup, Create, Import, Export, Fund, Collect.
 - Quick Deploy roles: Developer (1), Bundle (12 in UI; docs say up to 16), Sniper (up to 500), Task wallets.
-- The competitor accepts/exports private keys through its backend. Sunder must not. Use wallet-standard connection, watch-only address groups, hardware-wallet-compatible signing, and a separately configured executor signer policy.
+- The competitor accepts/exports private keys through its backend. Sunder must not reproduce server custody. Use Wallet Standard, watch-only address groups, hardware-wallet-compatible signing, or the user-requested encrypted browser-local Solana vault described in the 2026-08-02 correction below; persistent automation still requires a separately configured executor signer policy.
 - Do not reproduce the marketplace for aged/exchange-funded wallets or the Dev Warmup feature intended to manufacture deploy history.
 
 ### Funding and collecting
@@ -177,7 +177,7 @@ The authenticated EVM application was inspected on 2026-08-02 after the user cla
 - The UI explicitly states: keys are generated server-side and encrypted at rest with AES-256-GCM; private keys are later revealed through Export.
 - Project and Global wallets support Create, Import, Export, Fund, Collect, groups, bulk create (up to 100), and import into a project.
 - The selected chain is stored on each wallet. Global wallets from another chain are hidden from project import.
-- Sunder must not reproduce this custody boundary. Browser-wallet and policy-limited signer integrations must replace server-side plaintext-key import/export.
+- Sunder must not reproduce this server custody boundary. EVM remains browser-wallet/policy-limited. Solana may additionally use the explicit browser-local encrypted vault from the 2026-08-02 correction; no key import or server-side secret transport is allowed.
 
 ### EVM Swap Manager and tasks
 
@@ -330,11 +330,17 @@ The Solana-first trading follow-up adds:
 - direct Jupiter Swap V2 instruction manifests with exact input, `platformFeeBps=0`, bounded schema validation, lookup-table compression, simulation-derived compute limits, explicit Wallet Standard signing, signed simulation, standard-RPC submission, blockheight expiry, canonical confirmation, and exact confirmed balance deltas;
 - no success state before canonical RPC evidence, and no private-key or seed input in the web UI;
 - a persistent exact confirmed-cash-flow ledger that reports realized net PnL only for tracked inventory and labels incomplete inventory history;
-- a deterministic selected-signer wallet basket: amount/percentage applies per connected Wallet Standard signer, every unsigned transaction must simulate, signatures are requested sequentially, already confirmed wallets are excluded from partial retries, and watch-only wallets are never treated as signers;
-- a multi-connector Wallet Standard registry that persists only public connector IDs, attempts safe non-interactive reconnection, refreshes confirmed Mainnet SOL balances every ten seconds, and never creates/imports/exports key material in the web app;
-- a provider-owned `Create wallet` flow: Sunder opens Phantom, Solflare or Backpack, links the approved public Wallet Standard session, auto-selects it for terminal fan-out, and writes only public signer/receipt events to a browser-local wallet history; it does not claim cross-device account storage;
-- observed-data-only OHLCV candles rendered with the lazily loaded Apache-2.0 TradingView Lightweight Charts library, using confirmed Pump events when available and live Jupiter observations otherwise;
+- a deterministic selected-signer wallet basket: amount/percentage applies per selected Wallet Standard or encrypted embedded signer, every unsigned transaction must simulate, signatures are requested sequentially, already confirmed wallets are excluded from partial retries, and watch-only wallets are never treated as signers;
+- a multi-connector Wallet Standard registry that persists only public connector IDs, attempts safe non-interactive reconnection and refreshes confirmed Mainnet SOL balances every ten seconds;
+- an immediate `Create wallet` flow for Solana that generates a Keypair client-side, encrypts its secret with a non-extractable AES-GCM device key in IndexedDB, inserts and auto-selects it in the wallet table, signs only after simulation, provides an explicit warning/reveal/download export action, and never transmits the secret. Browser-data loss is wallet loss without an export; this is device-local and not cross-device account custody. Private-key/seed import remains absent;
+- observed-data-only OHLCV candles rendered with the lazily loaded Apache-2.0 TradingView Lightweight Charts library. Confirmed Pump candles use post-trade virtual-reserve spot price, strict timestamp/slot order and a stable market-cap/USD anchor; late slots are ignored so bars do not appear retroactively. Jupiter observations remain the fallback, and scientific notation is not used on the visible price scale;
 - an Axiom-like dense desktop composition with independently draggable/persistent trade and wallet panels plus an accessible responsive mobile stack;
 - a bounded `/api/market/recent` Vercel cache, direct anonymous-provider fallback and two-minute local real-data cache for fast resilient loading, with the complete iteration record in project-root `design-qa.md`.
 
-A read-only live Mainnet acceptance run observed a fresh confirmed Pump event, built a Jupiter `Pump.fun` route for `0.001 SOL`, and passed both unsigned RPC simulations with a `137186` compute-unit limit and `5004` lamport estimated network fee. It did not request a signature or submit a transaction. Interactive funded swaps still require the user's connected Wallet Standard signer and explicit approval. Persistent Mainnet sniper/launch execution remains locked until the runbook's RPC, signer, relay, funding, budget, and exact operator-confirmation gates are all satisfied.
+A read-only live Mainnet acceptance run observed a fresh confirmed Pump event, built a Jupiter `Pump.fun` route for `0.001 SOL`, and passed both unsigned RPC simulations with a `137186` compute-unit limit and `5004` lamport estimated network fee. It did not request a signature or submit a transaction. Interactive funded swaps still require a selected Wallet Standard or embedded signer and explicit user action. Persistent Mainnet sniper/launch execution remains locked until the runbook's RPC, signer, relay, funding, budget, and exact operator-confirmation gates are all satisfied.
+
+### 2026-08-02 user-directed wallet and chart correction
+
+The user explicitly superseded the earlier provider-only Solana wallet UX. Clicking `Create wallet` must not open a provider guidance modal: it creates an encrypted browser-local signer immediately, adds it to the selectable wallet list, persists it across reloads in that browser profile, refreshes its confirmed SOL balance, lets the selected basket buy/sell per wallet, and records only public-address lifecycle/receipt events in local history. Export is allowed only as an explicit, warned Base58 reveal/download; no import, server custody, analytics payload, logging or cross-product secret reuse is allowed. Phantom/Solflare/Backpack remain connectable from the header.
+
+The chart correction uses Pump TradeEvent virtual reserves rather than average execution price, orders same-second events by confirmed slot, rejects delayed older slots, and defaults to a familiar USD market-cap scale when Jupiter supplies the current market anchor. This prevents reversed same-second candles, retroactive bars and unreadable scientific-notation axes while retaining observed-data-only semantics.

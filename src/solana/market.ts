@@ -118,7 +118,17 @@ export interface PumpTrade {
   readonly creatorFeeLamports: bigint;
   readonly feeBasisPoints: number;
   readonly creatorFeeBasisPoints: number;
+  readonly virtualSolReservesLamports: bigint;
+  readonly virtualTokenReservesAtomic: bigint;
   readonly priceSol: number;
+}
+
+export function mergeConfirmedPumpTrade(current: readonly PumpTrade[], trade: PumpTrade): readonly PumpTrade[] {
+  const newestSlot = current[0]?.slot ?? 0;
+  if (trade.slot < newestSlot) return current;
+  return Object.freeze([trade, ...current.filter((item) => item.signature !== trade.signature)]
+    .sort((left, right) => right.slot - left.slot || right.timestamp - left.timestamp || right.signature.localeCompare(left.signature))
+    .slice(0, 160));
 }
 
 function recordValue(record: Record<string, unknown>, camel: string, snake: string): unknown {
@@ -153,10 +163,18 @@ export function normalizePumpTradeEvent(
   const event = value as Record<string, unknown>;
   const solAmountLamports = integer(recordValue(event, "solAmount", "sol_amount"), "solAmount");
   const tokenAmountAtomic = integer(recordValue(event, "tokenAmount", "token_amount"), "tokenAmount");
+  const virtualSolReservesLamports = integer(recordValue(event, "virtualSolReserves", "virtual_sol_reserves") ?? 0, "virtualSolReserves");
+  const virtualTokenReservesAtomic = integer(recordValue(event, "virtualTokenReserves", "virtual_token_reserves") ?? 0, "virtualTokenReserves");
   const timestampSeconds = integer(event.timestamp, "timestamp");
   const isBuy = Boolean(recordValue(event, "isBuy", "is_buy"));
   const tokenAmount = Number(tokenAmountAtomic) / 10 ** context.decimals;
   const solAmount = Number(solAmountLamports) / 1_000_000_000;
+  const virtualTokenReserves = Number(virtualTokenReservesAtomic) / 10 ** context.decimals;
+  const virtualSolReserves = Number(virtualSolReservesLamports) / 1_000_000_000;
+  // Execution amount / tokens is an average fill price and visibly distorts
+  // large candles. Pump's confirmed TradeEvent carries the post-trade spot
+  // state in its virtual reserves, so prefer that canonical ratio.
+  const reserveSpotPrice = virtualTokenReserves > 0 ? virtualSolReserves / virtualTokenReserves : 0;
   return Object.freeze({
     signature: context.signature,
     slot: context.slot,
@@ -170,7 +188,9 @@ export function normalizePumpTradeEvent(
     creatorFeeLamports: integer(recordValue(event, "creatorFee", "creator_fee") ?? 0, "creatorFee"),
     feeBasisPoints: Number(integer(recordValue(event, "feeBasisPoints", "fee_basis_points") ?? 0, "feeBasisPoints")),
     creatorFeeBasisPoints: Number(integer(recordValue(event, "creatorFeeBasisPoints", "creator_fee_basis_points") ?? 0, "creatorFeeBasisPoints")),
-    priceSol: tokenAmount > 0 ? solAmount / tokenAmount : 0,
+    virtualSolReservesLamports,
+    virtualTokenReservesAtomic,
+    priceSol: reserveSpotPrice > 0 ? reserveSpotPrice : tokenAmount > 0 ? solAmount / tokenAmount : 0,
   });
 }
 
@@ -214,8 +234,8 @@ export function decodePumpTradeLog(
   cursor += 1;
   const user = key();
   const timestamp = i64();
-  u64(); // virtual_sol_reserves
-  u64(); // virtual_token_reserves
+  const virtualSolReserves = u64();
+  const virtualTokenReserves = u64();
   u64(); // real_sol_reserves
   u64(); // real_token_reserves
   key(); // fee_recipient
@@ -224,7 +244,7 @@ export function decodePumpTradeLog(
   key(); // creator
   const creatorFeeBasisPoints = u64();
   const creatorFee = u64();
-  return normalizePumpTradeEvent({ mint, solAmount, tokenAmount, isBuy, user, timestamp, feeBasisPoints, fee, creatorFeeBasisPoints, creatorFee }, context);
+  return normalizePumpTradeEvent({ mint, solAmount, tokenAmount, isBuy, user, timestamp, virtualSolReserves, virtualTokenReserves, feeBasisPoints, fee, creatorFeeBasisPoints, creatorFee }, context);
 }
 
 const logsNotificationSchema = z.object({

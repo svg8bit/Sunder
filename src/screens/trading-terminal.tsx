@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Eye,
   History,
+  KeyRound,
   LoaderCircle,
   LockKeyhole,
   Move,
@@ -29,6 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { toast } from "sonner";
 import { Badge, Button, EmptyState, Field, Input, Panel, Segmented, Select, Toggle } from "../components/ui";
 import { FloatingPanel, resetTerminalPanelLayout } from "../components/floating-panel";
+import { EmbeddedWalletExport } from "../components/embedded-wallet-export";
 import { LiveCandlestickChart, type CandleInterval } from "../components/live-candlestick-chart";
 import { applyPercentageBps, formatAtomicAmount, parseDecimalAmount } from "../solana/amounts";
 import { SOLANA_MAINNET_RPC_URL } from "../solana/client";
@@ -44,10 +46,9 @@ import {
 import { safeTokenIcon, searchTokenInformation, type PumpTrade, type TokenInformation } from "../solana/market";
 import { usePumpTradeStream, useRecentTokens } from "../solana/use-market";
 import { useNetwork } from "../state/network";
-import { useSolanaWalletRegistry } from "../state/solana-wallet-registry";
+import { SOLANA_SIGNER_AVAILABLE_EVENT, SOLANA_SIGNER_SELECTION_STORAGE_KEY, useSolanaWalletRegistry } from "../state/solana-wallet-registry";
 import { deriveTrackedPosition, useTrading } from "../state/trading";
 import { useWorkspace } from "../state/workspace";
-import { openWalletControl } from "../wallets/control-event";
 
 type FeedFilter = "new" | "moving" | "liquid" | "pump";
 type TradeDirection = "buy" | "sell";
@@ -68,7 +69,13 @@ function formatCompact(value: number | undefined, prefix = ""): string {
 
 function formatUsd(value: number | undefined): string {
   if (value === undefined || !Number.isFinite(value)) return "—";
-  if (value > 0 && value < 0.0001) return `$${value.toExponential(2)}`;
+  if (value > 0 && value < 0.0001) {
+    const fraction = value.toFixed(14).split(".")[1] ?? "";
+    const zeroCount = fraction.match(/^0+/)?.[0].length ?? 0;
+    const subscript = String(zeroCount).replace(/[0-9]/g, (digit) => "₀₁₂₃₄₅₆₇₈₉"[Number(digit)] ?? digit);
+    const significant = fraction.slice(zeroCount, zeroCount + 4).replace(/0+$/, "") || "0";
+    return `$0.0${subscript}${significant}`;
+  }
   return new Intl.NumberFormat("en", { style: "currency", currency: "USD", maximumFractionDigits: value < 1 ? 6 : 2 }).format(value);
 }
 
@@ -212,9 +219,10 @@ export function TradingTerminalScreen() {
   const [walletSearch, setWalletSearch] = useState("");
   const [showWatchOnly, setShowWatchOnly] = useState(true);
   const [walletTab, setWalletTab] = useState<"wallets" | "history">("wallets");
+  const [exportWalletId, setExportWalletId] = useState<string>();
   const [selectedWalletIds, setSelectedWalletIds] = useState<readonly string[]>(() => {
     try {
-      const parsed = JSON.parse(window.localStorage.getItem("sunder:terminal-wallet-selection:v1") ?? "[]");
+      const parsed = JSON.parse(window.localStorage.getItem(SOLANA_SIGNER_SELECTION_STORAGE_KEY) ?? "[]");
       return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string").slice(0, 100) : [];
     } catch { return []; }
   });
@@ -285,18 +293,17 @@ export function TradingTerminalScreen() {
   const signingWalletKey = walletRegistry.wallets.map((candidate) => `${candidate.id}:${candidate.session.account.address.toString()}`).join("|");
 
   useEffect(() => {
-    try { window.localStorage.setItem("sunder:terminal-wallet-selection:v1", JSON.stringify(selectedWalletIds)); } catch { /* Storage policy may deny persistence. */ }
+    try { window.localStorage.setItem(SOLANA_SIGNER_SELECTION_STORAGE_KEY, JSON.stringify(selectedWalletIds)); } catch { /* Storage policy may deny persistence. */ }
   }, [selectedWalletIds]);
 
   useEffect(() => {
-    const signerIds = walletRegistry.wallets.map((candidate) => candidate.id);
-    setSelectedWalletIds((current) => {
-      const activeSignerIds = new Set(signerIds);
-      const retained = current.filter((id) => !id.startsWith("browser:") || activeSignerIds.has(id));
-      const next = [...new Set([...signerIds, ...retained])];
-      return next.length === current.length && next.every((value, index) => value === current[index]) ? current : Object.freeze(next);
-    });
-  }, [signingWalletKey, walletRegistry.wallets]);
+    const selectAvailableSigner = (event: Event) => {
+      if (!(event instanceof CustomEvent) || typeof event.detail?.id !== "string") return;
+      setSelectedWalletIds((current) => current.includes(event.detail.id) ? current : Object.freeze([...current, event.detail.id]));
+    };
+    window.addEventListener(SOLANA_SIGNER_AVAILABLE_EVENT, selectAvailableSigner);
+    return () => window.removeEventListener(SOLANA_SIGNER_AVAILABLE_EVENT, selectAvailableSigner);
+  }, []);
 
   useEffect(() => {
     if (!live || walletRegistry.wallets.length === 0) { setSignerBalances({}); return; }
@@ -376,7 +383,7 @@ export function TradingTerminalScreen() {
     if (tradeMode === "limit") { toast.error("Limit orders require the persistent executor. Open Sniper to arm them."); return; }
     if (mevMode === "private") { toast.error("Private relay is not configured in this browser deployment. Select Standard RPC or configure the executor."); return; }
     if (!selected) { toast.error("Select a live token first."); return; }
-    if (walletRegistry.wallets.length === 0) { toast.error("Connect at least one Wallet Standard signer first."); return; }
+    if (walletRegistry.wallets.length === 0) { toast.error("Create or connect at least one signing wallet first."); return; }
     if (selectedSigners.length === 0) { toast.error("Select at least one connected signer in the Wallets panel."); return; }
     quoteAbort.current?.abort();
     const controller = new AbortController();
@@ -490,6 +497,7 @@ export function TradingTerminalScreen() {
   const selectedBalanceLamports = selectedSignerBalanceLamports
     + networkWallets.reduce((sum, candidate) => selectedWalletIds.includes(candidate.id) ? sum + (watchBalances[candidate.id] ?? 0n) : sum, 0n);
   const displayedWalletIds = [...walletRegistry.wallets.map((candidate) => candidate.id), ...visibleWallets.map((candidate) => candidate.id)];
+  const selectedWalletCount = selectedSigners.length + networkWallets.filter((candidate) => selectedWalletIds.includes(candidate.id)).length;
   const allDisplayedSelected = displayedWalletIds.length > 0 && displayedWalletIds.every((id) => selectedWalletIds.includes(id));
   const toggleWalletSelection = (walletId: string) => setSelectedWalletIds((current) => current.includes(walletId)
     ? Object.freeze(current.filter((id) => id !== walletId))
@@ -505,6 +513,34 @@ export function TradingTerminalScreen() {
     window.history.pushState({}, "", "/sniper");
     window.dispatchEvent(new PopStateEvent("popstate"));
   };
+  const createSignerWallet = async () => {
+    if (walletRegistry.creatingEmbeddedWallet) return;
+    try {
+      const entry = await walletRegistry.createEmbedded();
+      const walletAddress = entry.session.account.address.toString();
+      workspace.record({ category: "wallet", action: "Embedded wallet created", detail: `${entry.connectorName} · ${walletAddress}; encrypted device-local vault.`, state: "local", network });
+      toast.success(`${entry.connectorName} created, saved in this browser and selected for trading.`);
+    } catch (createError) {
+      toast.error(createError instanceof Error ? createError.message : String(createError));
+    }
+  };
+  const removeSignerWallet = async (entry: (typeof walletRegistry.wallets)[number]) => {
+    if (entry.kind === "embedded") {
+      if (!window.confirm(`Delete ${entry.connectorName} from this browser? Export its private key first or access is permanently lost.`)) return;
+      try {
+        await walletRegistry.removeEmbedded(entry.id);
+        setSelectedWalletIds((current) => Object.freeze(current.filter((id) => id !== entry.id)));
+        workspace.record({ category: "wallet", action: "Embedded wallet deleted", detail: `${entry.connectorName} · ${entry.session.account.address.toString()}; encrypted local record removed.`, state: "local", network });
+        toast.success(`${entry.connectorName} removed from this browser.`);
+      } catch (removeError) {
+        toast.error(removeError instanceof Error ? removeError.message : String(removeError));
+      }
+      return;
+    }
+    await walletRegistry.disconnect(entry.id);
+    setSelectedWalletIds((current) => Object.freeze(current.filter((id) => id !== entry.id)));
+  };
+  const exportWallet = walletRegistry.wallets.find((entry) => entry.id === exportWalletId && entry.kind === "embedded");
 
   return (
     <div className="screen screen--edge trading-terminal-screen">
@@ -548,7 +584,7 @@ export function TradingTerminalScreen() {
             <span><BarChart3 size={13} /> Live OHLC · observed data only</span>
             <button type="button" className="terminal-layout-reset" onClick={resetTerminalPanelLayout} title="Reset floating panels"><Move size={13} /> Reset panels</button>
           </div>
-          <LiveCandlestickChart observations={selected ? observations[selected.id] ?? [] : []} trades={stream.trades} symbol={selected?.symbol ?? "TOKEN"} interval={candleInterval} />
+          <LiveCandlestickChart instrumentId={selected?.id ?? "none"} observations={selected ? observations[selected.id] ?? [] : []} trades={stream.trades} symbol={selected?.symbol ?? "TOKEN"} interval={candleInterval} marketCapUsd={selected?.mcap ?? selected?.fdv} spotPriceUsd={selected?.usdPrice} />
           <div className="terminal-market__facts">
             <div><span>Buys / sells 5m</span><strong>{selected?.stats5m?.numBuys ?? "—"} / {selected?.stats5m?.numSells ?? "—"}</strong></div>
             <div><span>Traders 5m</span><strong>{selected?.stats5m?.numTraders ?? "—"}</strong></div>
@@ -590,7 +626,7 @@ export function TradingTerminalScreen() {
                 <div className="terminal-trade-wallet-state"><span><Users size={13} /> {selectedSigners.length} signing wallet{selectedSigners.length === 1 ? "" : "s"} selected</span><span>{selectedSignerBalanceLoading ? "Balance…" : formatSol(selectedSignerBalanceLamports, 4)}</span></div>
 
                 <Button variant="primary" size="lg" className="terminal-quote-button" disabled={busy || !live || !selected || selectedSigners.length === 0 || mevMode === "private" || confirmedBasket.length > 0} onClick={() => void prepare()}>{phase === "quoting" ? <LoaderCircle className="spin" size={17} /> : <Zap size={17} />} {phase === "ready" ? "Refresh basket" : `Build & simulate ${direction}${selectedSigners.length > 0 ? ` · ${selectedSigners.length}` : ""}`}</Button>
-                {walletRegistry.wallets.length === 0 ? <button type="button" className="terminal-connect-inline" onClick={() => openWalletControl("create")}><WalletCards size={14} /> Create / connect signer wallet</button> : selectedSigners.length === 0 ? <p className="terminal-wallet-note"><WalletCards size={14} /> Select at least one connected signer in the Wallets panel.</p> : <p className="terminal-wallet-note"><ShieldCheck size={14} /> Amount applies to each selected signer; every wallet confirms separately.</p>}
+                {walletRegistry.wallets.length === 0 ? <button type="button" className="terminal-connect-inline" disabled={walletRegistry.creatingEmbeddedWallet} onClick={() => void createSignerWallet()}>{walletRegistry.creatingEmbeddedWallet ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />} Create signing wallet</button> : selectedSigners.length === 0 ? <p className="terminal-wallet-note"><WalletCards size={14} /> Select at least one signer in the Wallets panel.</p> : <p className="terminal-wallet-note"><ShieldCheck size={14} /> Amount applies to each selected signer; every wallet confirms separately.</p>}
 
                 {prepared ? <div className="terminal-quote-rows terminal-quote-rows--compact">
                   <div><span>Route</span><strong>{prepared.build.routePlan.map((step) => step.swapInfo.label).join(" → ")}</strong></div>
@@ -621,11 +657,11 @@ export function TradingTerminalScreen() {
           <div className="terminal-floating-panel__body">
             <div className="terminal-wallet-tabs"><button type="button" onClick={() => { setWalletTab("wallets"); setDirection("buy"); }}>Spot</button><button type="button" className={walletTab === "wallets" ? "is-active" : ""} onClick={() => setWalletTab("wallets")}>Wallets</button><button type="button" onClick={openSniperTasks}>Tasks</button><button type="button" className={walletTab === "history" ? "is-active" : ""} onClick={() => setWalletTab("history")}>History</button></div>
             {walletTab === "wallets" ? <>
-              <div className="terminal-wallet-summary"><span><strong>{activeWalletCount} wallets active</strong><b>{selectedSignerBalanceLoading ? "Balance…" : formatSol(selectedBalanceLamports, 4)}</b></span><span>{selectedWalletIds.length} selected · {selectedSigners.length} can sign</span></div>
+              <div className="terminal-wallet-summary"><span><strong>{activeWalletCount} wallets active</strong><b>{selectedSignerBalanceLoading ? "Balance…" : formatSol(selectedBalanceLamports, 4)}</b></span><span>{selectedWalletCount} selected · {selectedSigners.length} can sign</span></div>
               <div className="terminal-wallet-toolbar">
                 <label><Search size={13} /><input value={walletSearch} onChange={(event) => setWalletSearch(event.target.value)} placeholder="Name or address" /></label>
                 <button type="button" className={showWatchOnly ? "is-active" : ""} onClick={() => setShowWatchOnly((value) => !value)} title="Show watch-only wallets"><Eye size={14} /></button>
-                <button type="button" onClick={() => openWalletControl("create")}><Plus size={14} /> Create wallet</button>
+                <button type="button" disabled={walletRegistry.creatingEmbeddedWallet} onClick={() => void createSignerWallet()}>{walletRegistry.creatingEmbeddedWallet ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />} Create wallet</button>
                 <button type="button" onClick={openWalletInventory}><Settings2 size={14} /></button>
               </div>
               <div className="terminal-wallet-table">
@@ -635,23 +671,23 @@ export function TradingTerminalScreen() {
                   const selectedForTrading = selectedWalletIds.includes(entry.id);
                   return <div className="terminal-wallet-row is-signer" key={entry.id}>
                     <input type="checkbox" checked={selectedForTrading} onChange={() => toggleWalletSelection(entry.id)} aria-label={`Select ${entry.connectorName} signing wallet for trading`} />
-                    <span><i><WalletCards size={14} /></i><b>{entry.connectorName}<small>{shorten(walletAddress, 6, 5)}</small></b></span>
+                    <span><i>{entry.kind === "embedded" ? <KeyRound size={14} /> : <WalletCards size={14} />}</i><b>{entry.connectorName}<small>{shorten(walletAddress, 6, 5)}</small></b></span>
                     <strong>{signerBalances[entry.id] === undefined ? "…" : formatSol(signerBalances[entry.id] ?? 0n, 4)}</strong>
                     <Badge tone="good">Signer</Badge>
-                    <span><a href={explorerAddressUrl(walletAddress)} target="_blank" rel="noreferrer" aria-label={`Open ${entry.connectorName} wallet in explorer`}><ExternalLink size={13} /></a><button type="button" onClick={() => void walletRegistry.disconnect(entry.id)} aria-label={`Disconnect ${entry.connectorName}`}><Trash2 size={13} /></button></span>
+                    <span>{entry.kind === "embedded" ? <button type="button" onClick={() => setExportWalletId(entry.id)} aria-label={`Export ${entry.connectorName} private key`} title="Export private key"><KeyRound size={13} /></button> : null}<a href={explorerAddressUrl(walletAddress)} target="_blank" rel="noreferrer" aria-label={`Open ${entry.connectorName} wallet in explorer`}><ExternalLink size={13} /></a><button type="button" onClick={() => void removeSignerWallet(entry)} aria-label={`${entry.kind === "embedded" ? "Delete" : "Disconnect"} ${entry.connectorName}`}><Trash2 size={13} /></button></span>
                   </div>;
                 })}
-                {walletRegistry.wallets.length === 0 ? <button type="button" className="terminal-wallet-connect-row" onClick={() => openWalletControl("create")}><Plus size={15} /><span><strong>Create a signing wallet</strong><small>Created in Phantom, Solflare or Backpack · then auto-selected</small></span></button> : null}
+                {walletRegistry.wallets.length === 0 ? <button type="button" className="terminal-wallet-connect-row" disabled={walletRegistry.creatingEmbeddedWallet} onClick={() => void createSignerWallet()}><Plus size={15} /><span><strong>Create a signing wallet</strong><small>Generated locally · encrypted in this browser · immediately selected</small></span></button> : null}
                 {visibleWallets.map((candidate) => <div className="terminal-wallet-row" key={candidate.id}>
                   <input type="checkbox" checked={selectedWalletIds.includes(candidate.id)} onChange={() => toggleWalletSelection(candidate.id)} aria-label={`Select ${candidate.name} for monitoring`} />
                   <span><i><Eye size={14} /></i><b>{candidate.name}<small>{shorten(candidate.address, 6, 5)}</small></b></span>
                   <strong>{watchBalances[candidate.id] === undefined ? "—" : formatSol(watchBalances[candidate.id] ?? 0n, 4)}</strong>
                   <Badge tone="neutral">Watch</Badge>
-                  <span><a href={explorerAddressUrl(candidate.address)} target="_blank" rel="noreferrer" aria-label={`Open ${candidate.name} in explorer`}><ExternalLink size={13} /></a><button type="button" onClick={() => workspace.removeWallet(candidate.id)} aria-label={`Remove ${candidate.name}`}><Trash2 size={13} /></button></span>
+                  <span><a href={explorerAddressUrl(candidate.address)} target="_blank" rel="noreferrer" aria-label={`Open ${candidate.name} in explorer`}><ExternalLink size={13} /></a><button type="button" onClick={() => { workspace.removeWallet(candidate.id); setSelectedWalletIds((current) => Object.freeze(current.filter((id) => id !== candidate.id))); }} aria-label={`Remove ${candidate.name}`}><Trash2 size={13} /></button></span>
                 </div>)}
-                {walletRegistry.wallets.length === 0 && visibleWallets.length === 0 ? <div className="terminal-wallet-empty"><WalletCards size={18} /><span>No wallet connected. Add a self-custody signer without importing keys.</span></div> : null}
+                {walletRegistry.wallets.length === 0 && visibleWallets.length === 0 ? <div className="terminal-wallet-empty"><WalletCards size={18} /><span>No signer yet. Create one locally or connect Phantom from the header.</span></div> : null}
               </div>
-              <p className="terminal-wallet-safety"><ShieldCheck size={13} /> Checked watch-only rows are tracked, never signed. Trades fan out only to selected connected signers.</p>
+              <p className="terminal-wallet-safety"><ShieldCheck size={13} /> Trades fan out only to selected signers. Embedded keys are AES-GCM encrypted in this browser; export a backup before clearing site data.</p>
               <div className="terminal-pnl">
                 <div><span>Confirmed net SOL flow</span><strong className={(position?.confirmedNetSolFlowLamports ?? 0n) >= 0n ? "is-positive" : "is-negative"}>{position ? formatSol(position.confirmedNetSolFlowLamports) : "—"}</strong></div>
                 <div><span>Realized net PnL</span><strong className={(position?.realizedNetPnlLamports ?? 0n) >= 0n ? "is-positive" : "is-negative"}>{position ? formatSol(position.realizedNetPnlLamports) : "—"}</strong></div>
@@ -666,11 +702,12 @@ export function TradingTerminalScreen() {
                 <span><strong>{entry.action}</strong><small>{entry.detail}</small><time>{formatHistoryTime(entry.at)}</time></span>
                 {entry.signature ? <a href={explorerTransactionUrl(entry.signature)} target="_blank" rel="noreferrer" aria-label="Open confirmed transaction"><ExternalLink size={13} /></a> : <Badge tone={entry.state === "confirmed" ? "good" : entry.state === "failed" ? "bad" : "neutral"}>{entry.state}</Badge>}
               </div>)}
-              <p><ShieldCheck size={13} /> Public connector metadata and confirmed receipts only; no private keys are stored.</p>
+              <p><ShieldCheck size={13} /> History stores public addresses and receipts. Embedded secret material stays encrypted in the device-local browser vault and is never uploaded.</p>
             </div>}
           </div>
         </FloatingPanel>
       </div>
+      <EmbeddedWalletExport wallet={exportWallet} open={Boolean(exportWallet)} onOpenChange={(nextOpen) => { if (!nextOpen) setExportWalletId(undefined); }} />
     </div>
   );
 }

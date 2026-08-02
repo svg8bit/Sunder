@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { aggregateLiveCandles } from "../src/components/live-candlestick-chart";
+import { mergeConfirmedPumpTrade, type PumpTrade } from "../src/solana/market";
+
+function pumpTrade(signature: string, slot: number, timestamp: number): PumpTrade {
+  return {
+    signature,
+    slot,
+    timestamp,
+    mint: "mint",
+    user: "user",
+    side: "buy",
+    solAmountLamports: 1n,
+    tokenAmountAtomic: 1n,
+    feeLamports: 0n,
+    creatorFeeLamports: 0n,
+    feeBasisPoints: 0,
+    creatorFeeBasisPoints: 0,
+    virtualSolReservesLamports: 1n,
+    virtualTokenReservesAtomic: 1n,
+    priceSol: 1,
+  };
+}
 
 describe("live candlestick aggregation", () => {
   it("builds chronological OHLCV buckets only from observed prices", () => {
@@ -22,5 +43,19 @@ describe("live candlestick aggregation", () => {
       { at: 1_000, price: 0 },
       { at: 2_000, price: Number.POSITIVE_INFINITY },
     ], 1)).toEqual([]);
+  });
+
+  it("uses confirmed slot order inside the same second instead of reversing the candle", () => {
+    expect(aggregateLiveCandles([
+      { at: 10_000, order: 102, price: 3 },
+      { at: 10_000, order: 100, price: 1 },
+      { at: 10_000, order: 101, price: 2 },
+    ], 1)).toEqual([{ time: 10, open: 1, high: 3, low: 1, close: 3, volume: 0 }]);
+  });
+
+  it("does not insert a delayed confirmed slot behind the live chart watermark", () => {
+    const current = [pumpTrade("new", 102, 10_200), pumpTrade("old", 101, 10_100)];
+    expect(mergeConfirmedPumpTrade(current, pumpTrade("late", 100, 10_000))).toBe(current);
+    expect(mergeConfirmedPumpTrade(current, pumpTrade("next", 103, 10_300)).map((trade) => trade.slot)).toEqual([103, 102, 101]);
   });
 });

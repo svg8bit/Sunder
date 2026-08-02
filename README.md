@@ -40,11 +40,11 @@ npm ci --ignore-scripts
 npm run dev
 ```
 
-Copy `.env.example` only when custom public RPC endpoints or executor configuration are needed. Never add private keys, seeds, mnemonics or secret keys to `.env` or the browser.
+Copy `.env.example` only when custom public RPC endpoints or executor configuration are needed. Never add private keys, seeds, mnemonics or secret keys to `.env`, source code, logs or browser text inputs.
 
 The committed Solana Mainnet fallback is PublicNode because its HTTP and WebSocket endpoints were verified from the browser build. It is shared, best-effort infrastructure. Recent-token discovery uses a five-second Vercel CDN cache with a bounded direct-provider fallback and a two-minute browser cache so first paint is not held behind repeated anonymous provider calls. Configure a project-scoped browser-safe RPC before funded use; signer or relay credentials belong only in the private executor/signing boundary.
 
-The web app never receives, imports, stores or exports seed phrases/private keys. `Create wallet` opens a trusted Phantom, Solflare or Backpack provider, where the account and secret are actually created; after connection Sunder stores only the public connector ID/address, auto-selects the signer in the terminal, safely attempts non-interactive reconnection, refreshes confirmed Mainnet SOL balances every 10 seconds, and records public wallet/receipt events in browser-local history. Watch-only addresses are never treated as signers. This first public build is browser-local rather than cross-device account storage.
+The web app never accepts a pasted private key/seed and never transmits secret material. `Create wallet` on Solana generates a Keypair client-side, immediately encrypts its 64-byte secret with a non-extractable AES-GCM device key in IndexedDB, inserts and selects the signer in the wallet basket, and exposes a warned explicit Base58 export for backup. Clearing browser data loses an unexported embedded wallet, and this is not cross-device account storage. Phantom, Solflare and Backpack remain available through Wallet Standard. All signer balances refresh from confirmed Mainnet RPC every 10 seconds; watch-only addresses are never treated as signers.
 
 ## Verification
 

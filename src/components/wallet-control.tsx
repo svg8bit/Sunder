@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CheckCircle2, ExternalLink, LoaderCircle, Plus, ShieldCheck, Unplug, WalletCards } from "lucide-react";
+import { Check, CheckCircle2, ExternalLink, KeyRound, LoaderCircle, Plus, ShieldCheck, Unplug, WalletCards } from "lucide-react";
 import { toast } from "sonner";
 import { formatUnits } from "viem";
 import { useNetwork } from "../state/network";
@@ -57,21 +57,28 @@ export function WalletControl() {
   useEffect(() => {
     const openWallet = (event: Event) => {
       const nextIntent = event instanceof CustomEvent && event.detail?.intent === "create" ? "create" : "connect";
+      if (nextIntent === "create" && family === "solana") {
+        void solanaRegistry.createEmbedded().then((entry) => {
+          workspace.record({ category: "wallet", action: "Embedded wallet created", detail: `${entry.connectorName} · ${entry.session.account.address.toString()}; encrypted device-local vault.`, state: "local", network });
+          toast.success(`${entry.connectorName} created and saved in this browser.`);
+        }).catch((error) => toast.error(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       setIntent(nextIntent);
       setOpen(true);
     };
     window.addEventListener(WALLET_CONTROL_EVENT, openWallet);
     return () => window.removeEventListener(WALLET_CONTROL_EVENT, openWallet);
-  }, []);
+  }, [family, network, solanaRegistry, workspace]);
   useEffect(() => {
     const signerNetwork = network.startsWith("solana:") ? network : "solana:mainnet";
     for (const entry of solanaRegistry.wallets) {
       const signerAddress = entry.session.account.address.toString();
       const key = `${signerNetwork}:${signerAddress}`;
-      const alreadyRecorded = recordedSignerLinks.current.has(key) || workspace.audit.some((auditEntry) => auditEntry.network === signerNetwork && auditEntry.category === "wallet" && auditEntry.action === "Signer wallet linked" && auditEntry.detail.includes(signerAddress));
+      const alreadyRecorded = recordedSignerLinks.current.has(key) || workspace.audit.some((auditEntry) => auditEntry.network === signerNetwork && auditEntry.category === "wallet" && auditEntry.detail.includes(signerAddress));
       if (alreadyRecorded) continue;
       recordedSignerLinks.current.add(key);
-      workspace.record({ category: "wallet", action: "Signer wallet linked", detail: `${entry.connectorName} · ${signerAddress}; public connector session only.`, state: "local", network: signerNetwork });
+      workspace.record({ category: "wallet", action: "Signer wallet linked", detail: `${entry.connectorName} · ${signerAddress}; ${entry.kind === "embedded" ? "encrypted device-local signer" : "public Wallet Standard session"}.`, state: "local", network: signerNetwork });
     }
   }, [network, solanaRegistry.wallets, workspace]);
   useEffect(() => {
@@ -110,23 +117,22 @@ export function WalletControl() {
         <span>{shorten(address)}</span>
         {connected ? <span className="wallet-trigger__dot" /> : null}
       </Button>
-      <Modal open={open} onOpenChange={setOpen} title={`${intent === "create" ? "Create or connect" : "Connect"} ${chain.name} wallet`} description="Self-custody only. Wallet creation and secret export stay inside the selected wallet provider." className="wallet-modal">
-        <div className="wallet-security"><ShieldCheck size={19} /><span>Signatures stay in your wallet. Watch-only addresses contain no secret material.</span></div>
+      <Modal open={open} onOpenChange={setOpen} title={`${intent === "create" ? "Create or connect" : "Connect"} ${chain.name} wallet`} description="Connect an external self-custody wallet. Solana embedded wallets are created directly from the Wallets screen without this dialog." className="wallet-modal">
+        <div className="wallet-security"><ShieldCheck size={19} /><span>Provider signatures stay in the provider. Embedded wallet secrets stay encrypted in the local browser vault and never travel to Sunder servers.</span></div>
         {family === "solana" ? (
           <div className="stack">
-            {intent === "create" ? <div className="wallet-create-guidance"><Plus size={18} /><div><strong>Create a real signer wallet</strong><span>Create/select the account inside Phantom, Solflare or Backpack, approve the connection, and its public address will appear in the terminal already selected. One active signer session is kept per provider; use three providers for three independently signing wallets.</span></div></div> : null}
             {solanaRegistry.wallets.length > 0 ? <div className="wallet-registry-list">{solanaRegistry.wallets.map((entry) => (
               <Panel className="wallet-summary" key={entry.id}>
                 <div><span>{entry.connectorName}</span><strong>{shorten(entry.session.account.address.toString())}</strong></div>
-                <div><span>Signer</span><strong>Wallet Standard</strong></div>
-                <Button size="sm" variant="ghost" onClick={() => void solanaRegistry.disconnect(entry.id)}><Unplug size={14} /> Disconnect</Button>
+                <div><span>Signer</span><strong>{entry.kind === "embedded" ? "Encrypted local" : "Wallet Standard"}</strong></div>
+                {entry.kind === "embedded" ? <Button size="sm" variant="ghost" onClick={() => { setOpen(false); window.history.pushState({}, "", "/wallets"); window.dispatchEvent(new PopStateEvent("popstate")); }}><KeyRound size={14} /> Manage</Button> : <Button size="sm" variant="ghost" onClick={() => void solanaRegistry.disconnect(entry.id)}><Unplug size={14} /> Disconnect</Button>}
               </Panel>
             ))}</div> : null}
             <div className="connector-list">
               {solanaRegistry.connectors.length === 0 ? <p className="muted">No Wallet Standard provider detected in this browser.</p> : solanaRegistry.connectors.map((connector) => {
                 const connectedConnector = solanaRegistry.wallets.some((entry) => entry.connectorId === connector.id);
                 return <Button key={connector.id} className="connector" disabled={connectedConnector || Boolean(solanaRegistry.connectingConnectorId)} onClick={() => void solanaRegistry.connect(connector.id).catch((connectError) => toast.error(connectError instanceof Error ? connectError.message : String(connectError)))}>
-                  {connectedConnector ? <Check size={17} /> : solanaRegistry.connectingConnectorId === connector.id ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {connectedConnector ? `${connector.name} linked` : `${intent === "create" ? "Create / connect with" : "Connect"} ${connector.name}`}
+                  {connectedConnector ? <Check size={17} /> : solanaRegistry.connectingConnectorId === connector.id ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} {connectedConnector ? `${connector.name} linked` : `Connect ${connector.name}`}
                 </Button>;
               })}
             </div>

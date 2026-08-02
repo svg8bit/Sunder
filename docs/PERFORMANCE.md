@@ -4,9 +4,9 @@ Measured on the isolated Sunder VPS on 2026-08-02 UTC with Node.js/Vitest. These
 
 | Path | Samples | Measured p95 | Target | Result |
 |---|---:|---:|---:|---|
-| Deterministic hot rule evaluation | 2,000 | 0.009 ms | < 5 ms | Passed |
-| In-memory transaction manifest build, excluding RPC | 500 | 0.029 ms | < 25 ms | Passed |
-| First healthy in-memory relay dispatch after signature availability | 500 | 0.005 ms | < 10 ms | Passed |
+| Deterministic hot rule evaluation | 2,000 | 0.012 ms | < 5 ms | Passed |
+| In-memory transaction manifest build, excluding RPC | 500 | 0.048 ms | < 25 ms | Passed |
+| First healthy in-memory relay dispatch after signature availability | 500 | 0.004 ms | < 10 ms | Passed |
 
 Reproduce with:
 
@@ -22,9 +22,9 @@ Measured with `agent-browser vitals` against the loopback production Vite previe
 
 | Viewport | TTFB | FCP | LCP | CLS |
 |---|---:|---:|---:|---:|
-| Desktop `1908 x 832` | 4.3 ms | 204 ms | 632 ms | 0.000 |
-| Mobile `390 x 844` | 1.3 ms | 112 ms | 476 ms | 0.000 |
+| Desktop `1440 x 900` | 2.9 ms | 168 ms | 612 ms | 0.020 |
+| Mobile `390 x 844` | 2.8 ms | 140 ms | 520 ms | 0.000 |
 
-The terminal route chunk is `65.20 kB` (`20.14 kB` gzip). TradingView Lightweight Charts is isolated in a dynamic `168.14 kB` (`54.09 kB` gzip) chunk, so the chart implementation does not block the initial application shell. The main CSS bundle is `79.45 kB` (`15.26 kB` gzip).
+The terminal route chunk is `69.18 kB` (`21.34 kB` gzip). The explicit embedded-wallet export flow remains isolated in a `2.85 kB` (`1.37 kB` gzip) chunk. TradingView Lightweight Charts is isolated in a dynamic `168.14 kB` (`54.09 kB` gzip) chunk, so the chart implementation does not block the initial application shell. The main CSS bundle is `80.85 kB` (`15.48 kB` gzip).
 
 Market discovery uses a bounded same-origin Vercel Function with `s-maxage=5`, `stale-while-revalidate=25` and `stale-if-error=120`, plus a direct anonymous-provider fallback and a two-minute validated browser cache. This reduces duplicate upstream calls without presenting cached data as a live transaction result.

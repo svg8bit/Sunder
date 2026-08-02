@@ -248,9 +248,12 @@ describe("live token and Pump event validation", () => {
       creatorFee: "500000",
       feeBasisPoints: "100",
       creatorFeeBasisPoints: "25",
+      virtualSolReserves: "3000000000",
+      virtualTokenReserves: "1000000000000",
     }, { signature: "x".repeat(88), slot: 99, decimals: 6 });
     expect(event.side).toBe("buy");
-    expect(event.priceSol).toBe(0.2);
+    expect(event.priceSol).toBe(0.000003);
+    expect(event.virtualSolReservesLamports).toBe(3_000_000_000n);
     expect(event.feeBasisPoints + event.creatorFeeBasisPoints).toBe(125);
   });
 
@@ -267,7 +270,7 @@ describe("live token and Pump event validation", () => {
     data[cursor++] = 1;
     key(PUMP_PROGRAM_ADDRESS);
     view.setBigInt64(cursor, 1_700_000_000n, true); cursor += 8;
-    u64(1n); u64(2n); u64(3n); u64(4n);
+    u64(3_000_000_000n); u64(1_000_000_000_000n); u64(3n); u64(4n);
     key(PUMP_PROGRAM_ADDRESS);
     u64(100n);
     u64(2_000_000n);
@@ -275,7 +278,7 @@ describe("live token and Pump event validation", () => {
     u64(25n);
     u64(500_000n);
     const decoded = decodePumpTradeLog(`Program data: ${Buffer.from(data).toString("base64")}`, { signature: "z".repeat(88), slot: 101, decimals: 6 });
-    expect(decoded).toMatchObject({ mint: WRAPPED_SOL_MINT, user: PUMP_PROGRAM_ADDRESS, side: "buy", feeBasisPoints: 100, creatorFeeBasisPoints: 25, priceSol: 0.2 });
+    expect(decoded).toMatchObject({ mint: WRAPPED_SOL_MINT, user: PUMP_PROGRAM_ADDRESS, side: "buy", feeBasisPoints: 100, creatorFeeBasisPoints: 25, priceSol: 0.000003 });
     expect(decodePumpTradeLog("Program log: not an event", { signature: "z".repeat(88), slot: 101, decimals: 6 })).toBeUndefined();
   });
 });
