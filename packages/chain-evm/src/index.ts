@@ -1,11 +1,15 @@
 import {
   createPublicClient,
+  decodeFunctionResult,
+  encodeAbiParameters,
   encodeFunctionData,
   getAddress,
   http,
   isAddress,
   keccak256,
   stringToHex,
+  TransactionReceiptNotFoundError,
+  zeroAddress,
   type Address,
   type Hex,
 } from "viem";
@@ -35,20 +39,25 @@ import {
 
 export type EvmNetworkId = "evm:sepolia" | "evm:mainnet";
 
+// Universal Router V2.1.1 addresses are pinned to Uniswap/universal-router commit fa3f856951967abd7e0cf33901f6cead31eb5469.
 export const EVM_DEPLOYMENTS = Object.freeze({
   "evm:mainnet": Object.freeze({
     chainId: 1,
+    uniswapV2Router02: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" as Address,
     quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e" as Address,
+    v4Quoter: "0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203" as Address,
     swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45" as Address,
-    universalRouter: "0x66a9893cc07d91d95644aedd05d03f95e1dba8af" as Address,
+    universalRouter: "0x4C82D1fBFe28C977cBB58D8C7FF8FCF9F70a2cCA" as Address,
     wrappedNative: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address,
     flashbotsProtect: "https://rpc.flashbots.net/fast",
   }),
   "evm:sepolia": Object.freeze({
     chainId: 11_155_111,
+    uniswapV2Router02: "0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3" as Address,
     quoterV2: "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3" as Address,
+    v4Quoter: "0x61b3f2011a92d183c7dbadbda940a7555ccf9227" as Address,
     swapRouter02: "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E" as Address,
-    universalRouter: "0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b" as Address,
+    universalRouter: "0x7DfD4F31be6814D2906BDE155c3e1B146EAc1468" as Address,
     wrappedNative: "0xfff9976782d46cc05630d1f6ebab18b2324d6b14" as Address,
     flashbotsProtect: "https://rpc-sepolia.flashbots.net/",
   }),
@@ -105,6 +114,93 @@ const SWAP_ROUTER_02_ABI = [
   },
 ] as const;
 
+const UNISWAP_V2_ROUTER_02_ABI = [
+  {
+    type: "function",
+    name: "getAmountsOut",
+    stateMutability: "view",
+    inputs: [{ name: "amountIn", type: "uint256" }, { name: "path", type: "address[]" }],
+    outputs: [{ name: "amounts", type: "uint256[]" }],
+  },
+  {
+    type: "function",
+    name: "swapExactTokensForTokens",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amountIn", type: "uint256" },
+      { name: "amountOutMin", type: "uint256" },
+      { name: "path", type: "address[]" },
+      { name: "to", type: "address" },
+      { name: "deadline", type: "uint256" },
+    ],
+    outputs: [{ name: "amounts", type: "uint256[]" }],
+  },
+  {
+    type: "function",
+    name: "swapExactETHForTokens",
+    stateMutability: "payable",
+    inputs: [
+      { name: "amountOutMin", type: "uint256" },
+      { name: "path", type: "address[]" },
+      { name: "to", type: "address" },
+      { name: "deadline", type: "uint256" },
+    ],
+    outputs: [{ name: "amounts", type: "uint256[]" }],
+  },
+  {
+    type: "function",
+    name: "swapExactTokensForETH",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amountIn", type: "uint256" },
+      { name: "amountOutMin", type: "uint256" },
+      { name: "path", type: "address[]" },
+      { name: "to", type: "address" },
+      { name: "deadline", type: "uint256" },
+    ],
+    outputs: [{ name: "amounts", type: "uint256[]" }],
+  },
+] as const;
+
+const V4_QUOTER_ABI = [{
+  type: "function",
+  name: "quoteExactInputSingle",
+  stateMutability: "nonpayable",
+  inputs: [{
+    name: "params",
+    type: "tuple",
+    components: [
+      {
+        name: "poolKey",
+        type: "tuple",
+        components: [
+          { name: "currency0", type: "address" },
+          { name: "currency1", type: "address" },
+          { name: "fee", type: "uint24" },
+          { name: "tickSpacing", type: "int24" },
+          { name: "hooks", type: "address" },
+        ],
+      },
+      { name: "zeroForOne", type: "bool" },
+      { name: "exactAmount", type: "uint128" },
+      { name: "hookData", type: "bytes" },
+    ],
+  }],
+  outputs: [{ name: "amountOut", type: "uint256" }, { name: "gasEstimate", type: "uint256" }],
+}] as const;
+
+const UNIVERSAL_ROUTER_ABI = [{
+  type: "function",
+  name: "execute",
+  stateMutability: "payable",
+  inputs: [
+    { name: "commands", type: "bytes" },
+    { name: "inputs", type: "bytes[]" },
+    { name: "deadline", type: "uint256" },
+  ],
+  outputs: [],
+}] as const;
+
 export interface EvmCallRequest {
   readonly account: Address;
   readonly to: Address;
@@ -135,6 +231,16 @@ export interface EvmBlock {
   readonly transactions: readonly EvmBlockTransaction[];
 }
 
+export type EvmVenue = "v2" | "v3" | "v4";
+
+export interface V4PoolKey {
+  readonly currency0: Address;
+  readonly currency1: Address;
+  readonly fee: number;
+  readonly tickSpacing: number;
+  readonly hooks: Address;
+}
+
 export interface EvmRpc {
   quoteExactInputSingle(input: {
     readonly quoter: Address;
@@ -143,6 +249,19 @@ export interface EvmRpc {
     readonly tokenOut: Address;
     readonly amountIn: bigint;
     readonly fee: number;
+  }, signal?: AbortSignal): Promise<{ readonly amountOut: bigint; readonly gasEstimate: bigint }>;
+  quoteV2ExactInput(input: {
+    readonly router: Address;
+    readonly amountIn: bigint;
+    readonly path: readonly Address[];
+  }, signal?: AbortSignal): Promise<{ readonly amountOut: bigint }>;
+  quoteV4ExactInputSingle(input: {
+    readonly quoter: Address;
+    readonly account?: Address;
+    readonly poolKey: V4PoolKey;
+    readonly zeroForOne: boolean;
+    readonly amountIn: bigint;
+    readonly hookData: Hex;
   }, signal?: AbortSignal): Promise<{ readonly amountOut: bigint; readonly gasEstimate: bigint }>;
   getTransactionCount(account: Address, signal?: AbortSignal): Promise<number>;
   estimateFeesPerGas(signal?: AbortSignal): Promise<{ readonly maxFeePerGas: bigint; readonly maxPriorityFeePerGas: bigint }>;
@@ -181,11 +300,9 @@ export class ViemEvmRpc implements EvmRpc {
     readonly fee: number;
   }, signal?: AbortSignal): Promise<{ readonly amountOut: bigint; readonly gasEstimate: bigint }> {
     abortIfNeeded(signal);
-    const simulation = await this.#client.simulateContract({
-      address: input.quoter,
+    const data = encodeFunctionData({
       abi: QUOTER_V2_ABI,
       functionName: "quoteExactInputSingle",
-      account: input.account,
       args: [{
         tokenIn: input.tokenIn,
         tokenOut: input.tokenOut,
@@ -194,7 +311,80 @@ export class ViemEvmRpc implements EvmRpc {
         sqrtPriceLimitX96: 0n,
       }],
     });
-    const [amountOut, , , gasEstimate] = simulation.result;
+    const response = await this.#client.call({
+      account: input.account,
+      to: input.quoter,
+      data,
+      requestOptions: { signal },
+    });
+    if (!response.data) throw new Error("Uniswap V3 QuoterV2 returned empty response data.");
+    const [amountOut, , , gasEstimate] = decodeFunctionResult({
+      abi: QUOTER_V2_ABI,
+      functionName: "quoteExactInputSingle",
+      data: response.data,
+    });
+    return { amountOut, gasEstimate };
+  }
+
+  async quoteV2ExactInput(input: {
+    readonly router: Address;
+    readonly amountIn: bigint;
+    readonly path: readonly Address[];
+  }, signal?: AbortSignal): Promise<{ readonly amountOut: bigint }> {
+    abortIfNeeded(signal);
+    const data = encodeFunctionData({
+      abi: UNISWAP_V2_ROUTER_02_ABI,
+      functionName: "getAmountsOut",
+      args: [input.amountIn, [...input.path]],
+    });
+    const response = await this.#client.call({
+      to: input.router,
+      data,
+      requestOptions: { signal },
+    });
+    if (!response.data) throw new Error("Uniswap V2 Router02 returned empty response data.");
+    const amounts = decodeFunctionResult({
+      abi: UNISWAP_V2_ROUTER_02_ABI,
+      functionName: "getAmountsOut",
+      data: response.data,
+    });
+    const amountOut = amounts.at(-1);
+    if (amountOut === undefined) throw new Error("Uniswap V2 returned an empty amount path.");
+    return { amountOut };
+  }
+
+  async quoteV4ExactInputSingle(input: {
+    readonly quoter: Address;
+    readonly account?: Address;
+    readonly poolKey: V4PoolKey;
+    readonly zeroForOne: boolean;
+    readonly amountIn: bigint;
+    readonly hookData: Hex;
+  }, signal?: AbortSignal): Promise<{ readonly amountOut: bigint; readonly gasEstimate: bigint }> {
+    abortIfNeeded(signal);
+    if (input.amountIn > (1n << 128n) - 1n) throw new Error("Uniswap V4 exact input exceeds uint128.");
+    const data = encodeFunctionData({
+      abi: V4_QUOTER_ABI,
+      functionName: "quoteExactInputSingle",
+      args: [{
+        poolKey: input.poolKey,
+        zeroForOne: input.zeroForOne,
+        exactAmount: input.amountIn,
+        hookData: input.hookData,
+      }],
+    });
+    const response = await this.#client.call({
+      account: input.account,
+      to: input.quoter,
+      data,
+      requestOptions: { signal },
+    });
+    if (!response.data) throw new Error("Uniswap V4 Quoter returned empty response data.");
+    const [amountOut, gasEstimate] = decodeFunctionResult({
+      abi: V4_QUOTER_ABI,
+      functionName: "quoteExactInputSingle",
+      data: response.data,
+    });
     return { amountOut, gasEstimate };
   }
 
@@ -219,7 +409,7 @@ export class ViemEvmRpc implements EvmRpc {
 
   async call(request: EvmCallRequest, signal?: AbortSignal): Promise<void> {
     abortIfNeeded(signal);
-    await this.#client.call(request);
+    await this.#client.call({ ...request, requestOptions: { signal } });
   }
 
   async getBlockNumber(signal?: AbortSignal): Promise<bigint> {
@@ -248,8 +438,7 @@ export class ViemEvmRpc implements EvmRpc {
         status: receipt.status,
       };
     } catch (error) {
-      const message = errorMessage(error);
-      if (message.includes("could not be found") || message.includes("not found")) return null;
+      if (error instanceof TransactionReceiptNotFoundError) return null;
       throw error;
     }
   }
@@ -287,6 +476,238 @@ function quotePriceImpactBps(inputAmount: bigint, outputAmount: bigint, probeInp
   const baselineOutput = (probeOutput * inputAmount) / probeInput;
   if (baselineOutput <= 0n || outputAmount >= baselineOutput) return 0;
   return Number(((baselineOutput - outputAmount) * 10_000n) / baselineOutput);
+}
+
+function minimumOutput(amountOut: bigint, maxSlippageBps: number): bigint {
+  if (!Number.isInteger(maxSlippageBps) || maxSlippageBps < 0 || maxSlippageBps > 10_000) {
+    throw new Error("maxSlippageBps must be an integer from 0 to 10000.");
+  }
+  return amountOut * BigInt(10_000 - maxSlippageBps) / 10_000n;
+}
+
+function requestedVenue(attributes: QuoteRequest["event"]["attributes"]): EvmVenue | "auto" | undefined {
+  const raw = attributes.resolvedVenue ?? attributes.venue;
+  if (raw === undefined || raw === "") return undefined;
+  const normalized = String(raw).toLowerCase().replace(/^uniswap[-_ ]?/, "");
+  if (normalized === "auto") return "auto";
+  if (normalized === "v2" || normalized === "2") return "v2";
+  if (normalized === "v3" || normalized === "3") return "v3";
+  if (normalized === "v4" || normalized === "4") return "v4";
+  throw new Error(`Unsupported EVM venue ${String(raw)}. Expected auto, V2, V3, or V4.`);
+}
+
+function venueFromQuote(quote: Quote): EvmVenue | undefined {
+  switch (quote.provider) {
+    case "uniswap-v2-router-02": return "v2";
+    case "uniswap-v3-quoter-v2": return "v3";
+    case "uniswap-v4-quoter": return "v4";
+    default: return undefined;
+  }
+}
+
+function v2Path(
+  attributes: QuoteRequest["event"]["attributes"],
+  tokenIn: Address,
+  tokenOut: Address,
+  wrappedNative: Address,
+): readonly Address[] {
+  const raw = attributes.path;
+  const values = raw === undefined
+    ? [tokenIn, tokenOut]
+    : String(raw).split(/[,>]/).map((value) => value.trim()).filter(Boolean).map((value) => requireAddress(value, "V2 path address"));
+  if (values.length < 2 || values.length > 5) throw new Error("Uniswap V2 path must contain 2 to 5 addresses.");
+  if (values[0]?.toLowerCase() !== tokenIn.toLowerCase() || values.at(-1)?.toLowerCase() !== tokenOut.toLowerCase()) {
+    throw new Error("Uniswap V2 path endpoints must match tokenIn and tokenOut.");
+  }
+  const nativeInput = attributes.nativeInput === true;
+  const nativeOutput = attributes.nativeOutput === true;
+  if (nativeInput && nativeOutput) throw new Error("A V2 swap cannot use native ETH as both input and output.");
+  if (nativeInput && values[0]?.toLowerCase() !== wrappedNative.toLowerCase()) {
+    throw new Error("A native-input V2 path must start with the network wrapped-native token.");
+  }
+  if (nativeOutput && values.at(-1)?.toLowerCase() !== wrappedNative.toLowerCase()) {
+    throw new Error("A native-output V2 path must end with the network wrapped-native token.");
+  }
+  return Object.freeze(values);
+}
+
+function tickSpacingAttribute(value: string | number | boolean | undefined): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 32_767) {
+    throw new Error("V4 tickSpacing must be an integer from 1 to 32767.");
+  }
+  return parsed;
+}
+
+function hexAttribute(value: string | number | boolean | undefined, label: string, fallback: Hex = "0x"): Hex {
+  if (value === undefined || value === "") return fallback;
+  const candidate = String(value);
+  if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(candidate)) throw new Error(`${label} must be even-length hex bytes.`);
+  return candidate as Hex;
+}
+
+function v4Pool(input: QuoteRequest | Parameters<TransactionAdapter["build"]>[0]): {
+  readonly tokenIn: Address;
+  readonly tokenOut: Address;
+  readonly poolKey: V4PoolKey;
+  readonly zeroForOne: boolean;
+  readonly hookData: Hex;
+} {
+  const tokenIn = requireAddress(String(input.event.attributes.tokenIn ?? ""), "tokenIn");
+  const tokenOut = requireAddress(input.event.target ?? String(input.event.attributes.tokenOut ?? ""), "tokenOut");
+  const currencyIn = input.event.attributes.nativeInput === true ? zeroAddress : tokenIn;
+  const currencyOut = input.event.attributes.nativeOutput === true ? zeroAddress : tokenOut;
+  if (currencyIn.toLowerCase() === currencyOut.toLowerCase()) throw new Error("Uniswap V4 currencies must differ.");
+  const currency0 = BigInt(currencyIn) < BigInt(currencyOut) ? currencyIn : currencyOut;
+  const currency1 = currency0 === currencyIn ? currencyOut : currencyIn;
+  const poolKey = Object.freeze({
+    currency0,
+    currency1,
+    fee: feeTier(input.event.attributes),
+    tickSpacing: tickSpacingAttribute(input.event.attributes.tickSpacing),
+    hooks: input.event.attributes.hooks === undefined
+      ? zeroAddress
+      : requireAddress(String(input.event.attributes.hooks), "V4 hooks"),
+  });
+  return Object.freeze({
+    tokenIn,
+    tokenOut,
+    poolKey,
+    zeroForOne: currencyIn.toLowerCase() === currency0.toLowerCase(),
+    hookData: hexAttribute(input.event.attributes.hookData, "V4 hookData"),
+  });
+}
+
+export class UniswapV2QuoteAdapter implements QuoteAdapter {
+  readonly id = "uniswap-v2-router-02";
+  readonly networks: readonly ChainNetworkId[];
+  readonly #rpc: EvmRpc;
+  readonly #router?: Address;
+
+  constructor(options: { readonly network: EvmNetworkId; readonly rpc: EvmRpc; readonly router?: Address }) {
+    this.networks = Object.freeze([options.network]);
+    this.#rpc = options.rpc;
+    this.#router = options.router ?? EVM_DEPLOYMENTS[options.network].uniswapV2Router02;
+  }
+
+  async quote(request: QuoteRequest, signal?: AbortSignal): Promise<Quote> {
+    if (!this.#router) throw new Error(`Uniswap V2 Router02 is not officially configured for ${request.chain.name}.`);
+    const tokenIn = requireAddress(String(request.event.attributes.tokenIn ?? ""), "tokenIn");
+    const tokenOut = requireAddress(request.event.target ?? String(request.event.attributes.tokenOut ?? ""), "tokenOut");
+    const wrappedNative = EVM_DEPLOYMENTS[request.chain.id as EvmNetworkId].wrappedNative;
+    const path = v2Path(request.event.attributes, tokenIn, tokenOut, wrappedNative);
+    const result = await this.#rpc.quoteV2ExactInput({ router: this.#router, amountIn: request.inputAmountAtomic, path }, signal);
+    const probeInput = request.inputAmountAtomic > 1_000n ? request.inputAmountAtomic / 1_000n : 1n;
+    const probe = probeInput === request.inputAmountAtomic
+      ? result
+      : await this.#rpc.quoteV2ExactInput({ router: this.#router, amountIn: probeInput, path }, signal);
+    if (result.amountOut <= 0n) throw new Error("Uniswap V2 returned a zero-output quote.");
+    const now = Date.now();
+    return Object.freeze({
+      id: `uniswap-v2:${path.join(":")}:${now}`,
+      chain: request.chain,
+      inputAmountAtomic: request.inputAmountAtomic,
+      expectedOutputAmount: result.amountOut,
+      minimumOutputAmount: minimumOutput(result.amountOut, request.rule.maxSlippageBps),
+      priceImpactBps: quotePriceImpactBps(request.inputAmountAtomic, result.amountOut, probeInput, probe.amountOut),
+      route: Object.freeze<string[]>([...path, "Uniswap V2 Router02"]),
+      receivedAt: now,
+      expiresAt: now + 12_000,
+      provider: this.id,
+    });
+  }
+}
+
+export class UniswapV4QuoteAdapter implements QuoteAdapter {
+  readonly id = "uniswap-v4-quoter";
+  readonly networks: readonly ChainNetworkId[];
+  readonly #rpc: EvmRpc;
+  readonly #quoter: Address;
+
+  constructor(options: { readonly network: EvmNetworkId; readonly rpc: EvmRpc; readonly quoter?: Address }) {
+    this.networks = Object.freeze([options.network]);
+    this.#rpc = options.rpc;
+    this.#quoter = options.quoter ?? EVM_DEPLOYMENTS[options.network].v4Quoter;
+  }
+
+  async quote(request: QuoteRequest, signal?: AbortSignal): Promise<Quote> {
+    if (request.chain.family !== "evm") throw new Error("UniswapV4QuoteAdapter requires an EVM network.");
+    const pool = v4Pool(request);
+    const account = request.event.account ? requireAddress(request.event.account, "Wallet address") : undefined;
+    const result = await this.#rpc.quoteV4ExactInputSingle({
+      quoter: this.#quoter,
+      account,
+      poolKey: pool.poolKey,
+      zeroForOne: pool.zeroForOne,
+      amountIn: request.inputAmountAtomic,
+      hookData: pool.hookData,
+    }, signal);
+    const probeInput = request.inputAmountAtomic > 1_000n ? request.inputAmountAtomic / 1_000n : 1n;
+    const probe = probeInput === request.inputAmountAtomic
+      ? result
+      : await this.#rpc.quoteV4ExactInputSingle({
+        quoter: this.#quoter,
+        account,
+        poolKey: pool.poolKey,
+        zeroForOne: pool.zeroForOne,
+        amountIn: probeInput,
+        hookData: pool.hookData,
+      }, signal);
+    if (result.amountOut <= 0n) throw new Error("Uniswap V4 returned a zero-output quote.");
+    const now = Date.now();
+    return Object.freeze({
+      id: `uniswap-v4:${pool.poolKey.currency0}:${pool.poolKey.currency1}:${pool.poolKey.fee}:${now}`,
+      chain: request.chain,
+      inputAmountAtomic: request.inputAmountAtomic,
+      expectedOutputAmount: result.amountOut,
+      minimumOutputAmount: minimumOutput(result.amountOut, request.rule.maxSlippageBps),
+      priceImpactBps: quotePriceImpactBps(request.inputAmountAtomic, result.amountOut, probeInput, probe.amountOut),
+      route: Object.freeze([`${pool.tokenIn} -> ${pool.tokenOut}`, `Uniswap V4 fee=${pool.poolKey.fee} tick=${pool.poolKey.tickSpacing}`]),
+      receivedAt: now,
+      expiresAt: now + 12_000,
+      provider: this.id,
+    });
+  }
+}
+
+export class EvmVenueQuoteAdapter implements QuoteAdapter {
+  readonly id = "evm-uniswap-v2-v3-v4-router";
+  readonly networks: readonly ChainNetworkId[];
+  readonly #venues: Readonly<Record<EvmVenue, QuoteAdapter>>;
+  readonly #defaultVenue: EvmVenue;
+
+  constructor(options: {
+    readonly network: EvmNetworkId;
+    readonly venues: Readonly<Record<EvmVenue, QuoteAdapter>>;
+    readonly defaultVenue?: EvmVenue;
+  }) {
+    this.networks = Object.freeze([options.network]);
+    this.#venues = options.venues;
+    this.#defaultVenue = options.defaultVenue ?? "v3";
+  }
+
+  async quote(request: QuoteRequest, signal?: AbortSignal): Promise<Quote> {
+    const selected = requestedVenue(request.event.attributes);
+    if (selected && selected !== "auto") return this.#venues[selected].quote(request, signal);
+    if (selected === undefined) return this.#venues[this.#defaultVenue].quote(request, signal);
+
+    const attempts = (Object.entries(this.#venues) as [EvmVenue, QuoteAdapter][]).map(async ([venue, adapter]) => {
+      try {
+        return { venue, quote: await adapter.quote(request, signal) };
+      } catch (error) {
+        return { venue, error: errorMessage(error) };
+      }
+    });
+    const results = await Promise.all(attempts);
+    const viable = results.filter((result): result is { venue: EvmVenue; quote: Quote } => "quote" in result)
+      .map((result) => result.quote)
+      .toSorted((left, right) => left.expectedOutputAmount > right.expectedOutputAmount ? -1 : left.expectedOutputAmount < right.expectedOutputAmount ? 1 : 0);
+    const best = viable[0];
+    if (!best) {
+      throw new Error(`No Uniswap venue returned a valid quote: ${results.map((result) => `${result.venue}=${"error" in result ? result.error : "unavailable"}`).join("; ")}`);
+    }
+    return best;
+  }
 }
 
 export class UniswapV3QuoteAdapter implements QuoteAdapter {
@@ -329,7 +750,7 @@ export class UniswapV3QuoteAdapter implements QuoteAdapter {
       }, signal);
     if (quote.amountOut <= 0n) throw new Error("Uniswap returned a zero-output quote.");
     const now = Date.now();
-    const minimumOutputAmount = quote.amountOut * BigInt(10_000 - request.rule.maxSlippageBps) / 10_000n;
+    const minimumOutputAmount = minimumOutput(quote.amountOut, request.rule.maxSlippageBps);
     return Object.freeze({
       id: `uniswap:${tokenIn}:${tokenOut}:${fee}:${now}`,
       chain: request.chain,
@@ -389,6 +810,123 @@ function bump(value: bigint, basisPoints: number): bigint {
   return value + (value * BigInt(Math.max(1, basisPoints)) + 9_999n) / 10_000n;
 }
 
+async function buildEvmDraft(options: {
+  readonly input: Parameters<TransactionAdapter["build"]>[0];
+  readonly rpc: EvmRpc;
+  readonly account: Address;
+  readonly to: Address;
+  readonly data: Hex;
+  readonly value: bigint;
+  readonly action: string;
+  readonly accounts: readonly string[];
+  readonly signal?: AbortSignal;
+}): Promise<TransactionDraft> {
+  const { input, rpc, account, to, data, value, action, accounts, signal } = options;
+  if (input.chain.family !== "evm" || input.feePolicy.kind !== "eip1559") {
+    throw new Error("EVM transaction construction requires an EIP-1559 fee policy.");
+  }
+  const previousFee = input.previous?.feePolicy.kind === "eip1559" ? input.previous.feePolicy : undefined;
+  const networkFees = await rpc.estimateFeesPerGas(signal);
+  const requested = input.feePolicy;
+  let maxFeePerGas = requested.maxFeePerGas > 0n ? requested.maxFeePerGas : networkFees.maxFeePerGas;
+  let maxPriorityFeePerGas = requested.maxPriorityFeePerGas > 0n
+    ? requested.maxPriorityFeePerGas
+    : networkFees.maxPriorityFeePerGas;
+  if (previousFee) {
+    const replacementBumpBps = Math.max(1_250, requested.replacementBumpBps);
+    maxFeePerGas = [maxFeePerGas, bump(previousFee.maxFeePerGas, replacementBumpBps)].toSorted((left, right) => left < right ? 1 : -1)[0] ?? maxFeePerGas;
+    maxPriorityFeePerGas = [maxPriorityFeePerGas, bump(previousFee.maxPriorityFeePerGas, replacementBumpBps)].toSorted((left, right) => left < right ? 1 : -1)[0] ?? maxPriorityFeePerGas;
+  }
+  if (maxPriorityFeePerGas <= 0n || maxFeePerGas < maxPriorityFeePerGas) {
+    throw new Error("EIP-1559 fees require maxFeePerGas >= maxPriorityFeePerGas > 0.");
+  }
+  const previousLifetime = input.previous?.lifetime.kind === "evm-nonce" ? input.previous.lifetime : undefined;
+  const nonce = previousLifetime?.nonce ?? await rpc.getTransactionCount(account, signal);
+  const estimateRequest: EvmCallRequest = { account, to, data, value, maxFeePerGas, maxPriorityFeePerGas, nonce };
+  const estimatedGas = await rpc.estimateGas(estimateRequest, signal);
+  const requestedGas = requested.gasLimit > 0n ? requested.gasLimit : estimatedGas * 120n / 100n;
+  if (requestedGas < estimatedGas) throw new Error(`Configured gas limit ${requestedGas} is below estimate ${estimatedGas}.`);
+  const builtAtBlock = await rpc.getBlockNumber(signal);
+  const feePolicy: EvmFeePolicy = Object.freeze({
+    kind: "eip1559",
+    gasLimit: requestedGas,
+    maxFeePerGas,
+    maxPriorityFeePerGas,
+    replacementBumpBps: Math.max(1_250, requested.replacementBumpBps),
+  });
+  const payload: SerializedEvmDraft = {
+    account,
+    to,
+    data,
+    value: value.toString(),
+    gas: requestedGas.toString(),
+    maxFeePerGas: maxFeePerGas.toString(),
+    maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+    nonce,
+    builtAtBlock: builtAtBlock.toString(),
+  };
+  return Object.freeze({
+    idempotencyKey: input.idempotencyKey,
+    chain: input.chain,
+    eventId: input.event.id,
+    quoteId: input.quote.id,
+    lifetime: Object.freeze({
+      kind: "evm-nonce",
+      nonce,
+      validUntilBlock: builtAtBlock + 25n,
+      replacementOf: previousLifetime ? input.previous?.idempotencyKey : undefined,
+    }),
+    feePolicy,
+    instructions: Object.freeze([Object.freeze({
+      program: to,
+      action,
+      accounts: Object.freeze([...accounts]),
+      dataDigest: keccak256(data),
+    })]),
+    unsignedPayload: JSON.stringify(payload),
+    createdAt: Date.now(),
+  });
+}
+
+async function simulateEvmDraft(rpc: EvmRpc, transaction: TransactionDraft, signal?: AbortSignal): Promise<SimulationResult> {
+  if (transaction.chain.family !== "evm" || transaction.feePolicy.kind !== "eip1559") {
+    throw new Error("Expected an EIP-1559 transaction.");
+  }
+  const payload = parseSerializedDraft(transaction);
+  const request: EvmCallRequest = {
+    account: payload.account,
+    to: payload.to,
+    data: payload.data,
+    value: BigInt(payload.value),
+    gas: BigInt(payload.gas),
+    maxFeePerGas: BigInt(payload.maxFeePerGas),
+    maxPriorityFeePerGas: BigInt(payload.maxPriorityFeePerGas),
+    nonce: payload.nonce,
+  };
+  try {
+    await rpc.call(request, signal);
+    const estimatedGas = await rpc.estimateGas(request, signal);
+    return Object.freeze({
+      ok: true,
+      simulatedAt: Date.now(),
+      unitsConsumed: estimatedGas,
+      estimatedFeeAtomic: estimatedGas * transaction.feePolicy.maxFeePerGas,
+      logs: Object.freeze(["eth_call passed", `estimateGas=${estimatedGas}`]),
+      accountDiff: Object.freeze({}),
+    });
+  } catch (error) {
+    return Object.freeze({
+      ok: false,
+      simulatedAt: Date.now(),
+      unitsConsumed: 0n,
+      estimatedFeeAtomic: 0n,
+      logs: Object.freeze([]),
+      accountDiff: Object.freeze({}),
+      error: errorMessage(error),
+    });
+  }
+}
+
 export class UniswapV3TransactionAdapter implements TransactionAdapter {
   readonly id = "uniswap-v3-swap-router-02";
   readonly networks: readonly ChainNetworkId[];
@@ -421,109 +959,207 @@ export class UniswapV3TransactionAdapter implements TransactionAdapter {
         sqrtPriceLimitX96: 0n,
       }],
     });
-    const previousFee = input.previous?.feePolicy.kind === "eip1559" ? input.previous.feePolicy : undefined;
-    const networkFees = await this.#rpc.estimateFeesPerGas(signal);
-    const requested = input.feePolicy;
-    let maxFeePerGas = requested.maxFeePerGas > 0n ? requested.maxFeePerGas : networkFees.maxFeePerGas;
-    let maxPriorityFeePerGas = requested.maxPriorityFeePerGas > 0n
-      ? requested.maxPriorityFeePerGas
-      : networkFees.maxPriorityFeePerGas;
-    if (previousFee) {
-      maxFeePerGas = [maxFeePerGas, bump(previousFee.maxFeePerGas, requested.replacementBumpBps)].toSorted((left, right) => left < right ? 1 : -1)[0] ?? maxFeePerGas;
-      maxPriorityFeePerGas = [maxPriorityFeePerGas, bump(previousFee.maxPriorityFeePerGas, requested.replacementBumpBps)].toSorted((left, right) => left < right ? 1 : -1)[0] ?? maxPriorityFeePerGas;
-    }
-    if (maxPriorityFeePerGas <= 0n || maxFeePerGas < maxPriorityFeePerGas) {
-      throw new Error("EIP-1559 fees require maxFeePerGas >= maxPriorityFeePerGas > 0.");
-    }
-    const previousLifetime = input.previous?.lifetime.kind === "evm-nonce" ? input.previous.lifetime : undefined;
-    const nonce = previousLifetime?.nonce ?? await this.#rpc.getTransactionCount(account, signal);
     const value = tokenIn.toLowerCase() === EVM_DEPLOYMENTS[input.chain.id as EvmNetworkId].wrappedNative.toLowerCase()
       && input.event.attributes.nativeInput === true
       ? input.quote.inputAmountAtomic
       : 0n;
-    const estimateRequest: EvmCallRequest = { account, to: this.#router, data, value, maxFeePerGas, maxPriorityFeePerGas, nonce };
-    const estimatedGas = await this.#rpc.estimateGas(estimateRequest, signal);
-    const requestedGas = requested.gasLimit > 0n ? requested.gasLimit : estimatedGas * 120n / 100n;
-    if (requestedGas < estimatedGas) throw new Error(`Configured gas limit ${requestedGas} is below estimate ${estimatedGas}.`);
-    const builtAtBlock = await this.#rpc.getBlockNumber(signal);
-    const feePolicy: EvmFeePolicy = Object.freeze({
-      kind: "eip1559",
-      gasLimit: requestedGas,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-      replacementBumpBps: requested.replacementBumpBps,
-    });
-    const payload: SerializedEvmDraft = {
-      account,
-      to: this.#router,
-      data,
-      value: value.toString(),
-      gas: requestedGas.toString(),
-      maxFeePerGas: maxFeePerGas.toString(),
-      maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
-      nonce,
-      builtAtBlock: builtAtBlock.toString(),
-    };
-    return Object.freeze({
-      idempotencyKey: input.idempotencyKey,
-      chain: input.chain,
-      eventId: input.event.id,
-      quoteId: input.quote.id,
-      lifetime: Object.freeze({
-        kind: "evm-nonce",
-        nonce,
-        validUntilBlock: builtAtBlock + 25n,
-        replacementOf: previousLifetime ? input.previous?.idempotencyKey : undefined,
-      }),
-      feePolicy,
-      instructions: Object.freeze([Object.freeze({
-        program: this.#router,
-        action: "uniswap-v3-exact-input-single",
-        accounts: Object.freeze([account, tokenIn, tokenOut]),
-        dataDigest: keccak256(data),
-      })]),
-      unsignedPayload: JSON.stringify(payload),
-      createdAt: Date.now(),
-    });
+    return buildEvmDraft({ input, rpc: this.#rpc, account, to: this.#router, data, value, action: "uniswap-v3-exact-input-single", accounts: [account, tokenIn, tokenOut], signal });
   }
 
   async simulate(transaction: TransactionDraft, signal?: AbortSignal): Promise<SimulationResult> {
-    if (transaction.chain.family !== "evm" || transaction.feePolicy.kind !== "eip1559") {
-      throw new Error("Expected an EIP-1559 transaction.");
+    return simulateEvmDraft(this.#rpc, transaction, signal);
+  }
+}
+
+function deadlineSeconds(attributes: QuoteRequest["event"]["attributes"]): bigint {
+  const requested = Number(attributes.deadlineSeconds ?? 180);
+  if (!Number.isSafeInteger(requested) || requested < 30 || requested > 1_800) {
+    throw new Error("EVM swap deadlineSeconds must be an integer from 30 to 1800.");
+  }
+  return BigInt(Math.floor(Date.now() / 1_000) + requested);
+}
+
+export class UniswapV2TransactionAdapter implements TransactionAdapter {
+  readonly id = "uniswap-v2-router-02";
+  readonly networks: readonly ChainNetworkId[];
+  readonly #rpc: EvmRpc;
+  readonly #router?: Address;
+
+  constructor(options: { readonly network: EvmNetworkId; readonly rpc: EvmRpc; readonly router?: Address }) {
+    this.networks = Object.freeze([options.network]);
+    this.#rpc = options.rpc;
+    this.#router = options.router ?? EVM_DEPLOYMENTS[options.network].uniswapV2Router02;
+  }
+
+  async build(input: Parameters<TransactionAdapter["build"]>[0], signal?: AbortSignal): Promise<TransactionDraft> {
+    if (!this.#router) throw new Error(`Uniswap V2 Router02 is not officially configured for ${input.chain.name}.`);
+    if (input.chain.family !== "evm" || input.feePolicy.kind !== "eip1559") {
+      throw new Error("UniswapV2TransactionAdapter requires an EIP-1559 transaction.");
     }
-    const payload = parseSerializedDraft(transaction);
-    const request: EvmCallRequest = {
-      account: payload.account,
-      to: payload.to,
-      data: payload.data,
-      value: BigInt(payload.value),
-      gas: BigInt(payload.gas),
-      maxFeePerGas: BigInt(payload.maxFeePerGas),
-      maxPriorityFeePerGas: BigInt(payload.maxPriorityFeePerGas),
-      nonce: payload.nonce,
-    };
-    try {
-      await this.#rpc.call(request, signal);
-      const estimatedGas = await this.#rpc.estimateGas(request, signal);
-      return Object.freeze({
-        ok: true,
-        simulatedAt: Date.now(),
-        unitsConsumed: estimatedGas,
-        estimatedFeeAtomic: estimatedGas * transaction.feePolicy.maxFeePerGas,
-        logs: Object.freeze(["eth_call passed", `estimateGas=${estimatedGas}`]),
-        accountDiff: Object.freeze({}),
-      });
-    } catch (error) {
-      return Object.freeze({
-        ok: false,
-        simulatedAt: Date.now(),
-        unitsConsumed: 0n,
-        estimatedFeeAtomic: 0n,
-        logs: Object.freeze([]),
-        accountDiff: Object.freeze({}),
-        error: errorMessage(error),
-      });
+    const account = requireAddress(input.event.account, "Wallet address");
+    const tokenIn = requireAddress(String(input.event.attributes.tokenIn ?? ""), "tokenIn");
+    const tokenOut = requireAddress(input.event.target ?? String(input.event.attributes.tokenOut ?? ""), "tokenOut");
+    const wrappedNative = EVM_DEPLOYMENTS[input.chain.id as EvmNetworkId].wrappedNative;
+    const path = v2Path(input.event.attributes, tokenIn, tokenOut, wrappedNative);
+    const deadline = deadlineSeconds(input.event.attributes);
+    const nativeInput = input.event.attributes.nativeInput === true;
+    const nativeOutput = input.event.attributes.nativeOutput === true;
+    const data = nativeInput
+      ? encodeFunctionData({
+        abi: UNISWAP_V2_ROUTER_02_ABI,
+        functionName: "swapExactETHForTokens",
+        args: [input.quote.minimumOutputAmount, [...path], account, deadline],
+      })
+      : nativeOutput
+        ? encodeFunctionData({
+          abi: UNISWAP_V2_ROUTER_02_ABI,
+          functionName: "swapExactTokensForETH",
+          args: [input.quote.inputAmountAtomic, input.quote.minimumOutputAmount, [...path], account, deadline],
+        })
+        : encodeFunctionData({
+          abi: UNISWAP_V2_ROUTER_02_ABI,
+          functionName: "swapExactTokensForTokens",
+          args: [input.quote.inputAmountAtomic, input.quote.minimumOutputAmount, [...path], account, deadline],
+        });
+    return buildEvmDraft({
+      input,
+      rpc: this.#rpc,
+      account,
+      to: this.#router,
+      data,
+      value: nativeInput ? input.quote.inputAmountAtomic : 0n,
+      action: nativeInput ? "uniswap-v2-exact-eth-for-tokens" : nativeOutput ? "uniswap-v2-exact-tokens-for-eth" : "uniswap-v2-exact-tokens-for-tokens",
+      accounts: [account, ...path],
+      signal,
+    });
+  }
+
+  simulate(transaction: TransactionDraft, signal?: AbortSignal): Promise<SimulationResult> {
+    return simulateEvmDraft(this.#rpc, transaction, signal);
+  }
+}
+
+const V4_SWAP_PARAM = [{
+  type: "tuple",
+  name: "params",
+  components: [
+    {
+      type: "tuple",
+      name: "poolKey",
+      components: [
+        { type: "address", name: "currency0" },
+        { type: "address", name: "currency1" },
+        { type: "uint24", name: "fee" },
+        { type: "int24", name: "tickSpacing" },
+        { type: "address", name: "hooks" },
+      ],
+    },
+    { type: "bool", name: "zeroForOne" },
+    { type: "uint128", name: "amountIn" },
+    { type: "uint128", name: "amountOutMinimum" },
+    { type: "uint256", name: "minHopPriceX36" },
+    { type: "bytes", name: "hookData" },
+  ],
+}] as const;
+
+export class UniswapV4TransactionAdapter implements TransactionAdapter {
+  readonly id = "uniswap-v4-universal-router";
+  readonly networks: readonly ChainNetworkId[];
+  readonly #rpc: EvmRpc;
+  readonly #router: Address;
+
+  constructor(options: { readonly network: EvmNetworkId; readonly rpc: EvmRpc; readonly router?: Address }) {
+    this.networks = Object.freeze([options.network]);
+    this.#rpc = options.rpc;
+    this.#router = options.router ?? EVM_DEPLOYMENTS[options.network].universalRouter;
+  }
+
+  async build(input: Parameters<TransactionAdapter["build"]>[0], signal?: AbortSignal): Promise<TransactionDraft> {
+    if (input.chain.family !== "evm" || input.feePolicy.kind !== "eip1559") {
+      throw new Error("UniswapV4TransactionAdapter requires an EIP-1559 transaction.");
     }
+    if (input.quote.inputAmountAtomic > (1n << 128n) - 1n || input.quote.minimumOutputAmount > (1n << 128n) - 1n) {
+      throw new Error("Uniswap V4 exact input/output minimum exceeds uint128.");
+    }
+    const account = requireAddress(input.event.account, "Wallet address");
+    const pool = v4Pool(input);
+    const swapInput = encodeAbiParameters(V4_SWAP_PARAM, [{
+      poolKey: pool.poolKey,
+      zeroForOne: pool.zeroForOne,
+      amountIn: input.quote.inputAmountAtomic,
+      amountOutMinimum: input.quote.minimumOutputAmount,
+      minHopPriceX36: 0n,
+      hookData: pool.hookData,
+    }]);
+    const currencyIn = pool.zeroForOne ? pool.poolKey.currency0 : pool.poolKey.currency1;
+    const currencyOut = pool.zeroForOne ? pool.poolKey.currency1 : pool.poolKey.currency0;
+    const settleInput = encodeAbiParameters(
+      [{ type: "address", name: "currency" }, { type: "uint256", name: "amount" }],
+      [currencyIn, input.quote.inputAmountAtomic],
+    );
+    const takeInput = encodeAbiParameters(
+      [{ type: "address", name: "currency" }, { type: "uint256", name: "minimumAmount" }],
+      [currencyOut, input.quote.minimumOutputAmount],
+    );
+    const v4CommandInput = encodeAbiParameters(
+      [{ type: "bytes", name: "actions" }, { type: "bytes[]", name: "params" }],
+      ["0x060c0f", [swapInput, settleInput, takeInput]],
+    );
+    const data = encodeFunctionData({
+      abi: UNIVERSAL_ROUTER_ABI,
+      functionName: "execute",
+      args: ["0x10", [v4CommandInput], deadlineSeconds(input.event.attributes)],
+    });
+    const nativeInput = currencyIn.toLowerCase() === zeroAddress;
+    return buildEvmDraft({
+      input,
+      rpc: this.#rpc,
+      account,
+      to: this.#router,
+      data,
+      value: nativeInput ? input.quote.inputAmountAtomic : 0n,
+      action: "uniswap-v4-exact-input-single",
+      accounts: [account, pool.tokenIn, pool.tokenOut, pool.poolKey.hooks],
+      signal,
+    });
+  }
+
+  simulate(transaction: TransactionDraft, signal?: AbortSignal): Promise<SimulationResult> {
+    return simulateEvmDraft(this.#rpc, transaction, signal);
+  }
+}
+
+export class EvmVenueTransactionAdapter implements TransactionAdapter {
+  readonly id = "evm-uniswap-v2-v3-v4-transaction-router";
+  readonly networks: readonly ChainNetworkId[];
+  readonly #venues: Readonly<Record<EvmVenue, TransactionAdapter>>;
+  readonly #defaultVenue: EvmVenue;
+
+  constructor(options: {
+    readonly network: EvmNetworkId;
+    readonly venues: Readonly<Record<EvmVenue, TransactionAdapter>>;
+    readonly defaultVenue?: EvmVenue;
+  }) {
+    this.networks = Object.freeze([options.network]);
+    this.#venues = options.venues;
+    this.#defaultVenue = options.defaultVenue ?? "v3";
+  }
+
+  build(input: Parameters<TransactionAdapter["build"]>[0], signal?: AbortSignal): Promise<TransactionDraft> {
+    const requested = requestedVenue(input.event.attributes);
+    const quoted = venueFromQuote(input.quote);
+    const selected = requested === undefined ? quoted ?? this.#defaultVenue : requested === "auto" ? quoted : requested;
+    if (!selected) throw new Error("Auto venue quote did not identify a V2, V3, or V4 transaction adapter.");
+    if (quoted && requested && requested !== "auto" && quoted !== requested) {
+      throw new Error(`Quote venue ${quoted} does not match requested venue ${requested}.`);
+    }
+    return this.#venues[selected].build(input, signal);
+  }
+
+  simulate(transaction: TransactionDraft, signal?: AbortSignal): Promise<SimulationResult> {
+    const action = transaction.instructions[0]?.action ?? "";
+    const venue: EvmVenue = action.includes("v2") ? "v2" : action.includes("v4") ? "v4" : "v3";
+    return this.#venues[venue].simulate(transaction, signal);
   }
 }
 
@@ -671,6 +1307,7 @@ export class FlashbotsProtectRelayAdapter implements RelayAdapter {
   readonly #endpoint?: string;
   readonly #authHeader?: (body: string) => Promise<string>;
   readonly #fetcher: typeof fetch;
+  readonly #timeoutMs: number;
   #latencyMs = 250;
   #successes = 0;
   #failures = 0;
@@ -681,11 +1318,13 @@ export class FlashbotsProtectRelayAdapter implements RelayAdapter {
     readonly endpoint?: string;
     readonly authHeader?: (body: string) => Promise<string>;
     readonly fetcher?: typeof fetch;
+    readonly timeoutMs?: number;
   }) {
     this.networks = Object.freeze([options.network]);
     this.#endpoint = options.endpoint;
     this.#authHeader = options.authHeader;
     this.#fetcher = options.fetcher ?? fetch;
+    this.#timeoutMs = options.timeoutMs ?? 5_000;
   }
 
   health(): RelayHealth {
@@ -720,7 +1359,9 @@ export class FlashbotsProtectRelayAdapter implements RelayAdapter {
     try {
       const headers: Record<string, string> = { "content-type": "application/json" };
       if (this.#authHeader) headers["x-flashbots-signature"] = await this.#authHeader(body);
-      const response = await this.#fetcher(this.#endpoint, { method: "POST", headers, body, signal });
+      const timeoutSignal = AbortSignal.timeout(this.#timeoutMs);
+      const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const response = await this.#fetcher(this.#endpoint, { method: "POST", headers, body, signal: requestSignal });
       const latencyMs = performance.now() - startedAt;
       this.#latencyMs = this.#latencyMs * 0.7 + latencyMs * 0.3;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -731,7 +1372,12 @@ export class FlashbotsProtectRelayAdapter implements RelayAdapter {
       return { relayId: this.id, kind: this.kind, accepted: true, acceptedAt: Date.now(), latencyMs, responseId: payload.result };
     } catch (error) {
       this.#failures += 1;
-      return { relayId: this.id, kind: this.kind, accepted: false, latencyMs: performance.now() - startedAt, error: errorMessage(error) };
+      const name = error instanceof Error ? error.name : "RelayError";
+      const detail = errorMessage(error)
+        .replace(/https?:\/\/[^\s)\]}]+/giu, "[redacted-endpoint]")
+        .replace(/\b(token|key|auth|signature)=([^&\s]+)/giu, "$1=[redacted]")
+        .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [redacted]");
+      return { relayId: this.id, kind: this.kind, accepted: false, latencyMs: performance.now() - startedAt, error: `${name}: ${detail}`.slice(0, 512) };
     }
   }
 }
@@ -741,8 +1387,12 @@ export interface EvmAdapterConfig {
   readonly rpcUrl: string;
   readonly wallet: WalletAdapter;
   readonly rpc?: EvmRpc;
+  readonly uniswapV2Router?: Address;
   readonly quoter?: Address;
+  readonly v4Quoter?: Address;
   readonly router?: Address;
+  readonly universalRouter?: Address;
+  readonly defaultVenue?: EvmVenue;
   readonly flashbotsEndpoint?: string;
   readonly flashbotsAuthHeader?: (body: string) => Promise<string>;
   readonly enableFlashbotsProtect?: boolean;
@@ -772,10 +1422,20 @@ export function createEvmRelayAdapters(config: Pick<EvmAdapterConfig, "network" 
 
 export function createEvmChainAdapter(config: EvmAdapterConfig): ChainAdapter {
   const rpc = config.rpc ?? new ViemEvmRpc(config.network, config.rpcUrl);
+  const quoteVenues = Object.freeze({
+    v2: new UniswapV2QuoteAdapter({ network: config.network, rpc, router: config.uniswapV2Router }),
+    v3: new UniswapV3QuoteAdapter({ network: config.network, rpc, quoter: config.quoter }),
+    v4: new UniswapV4QuoteAdapter({ network: config.network, rpc, quoter: config.v4Quoter }),
+  });
+  const transactionVenues = Object.freeze({
+    v2: new UniswapV2TransactionAdapter({ network: config.network, rpc, router: config.uniswapV2Router }),
+    v3: new UniswapV3TransactionAdapter({ network: config.network, rpc, router: config.router }),
+    v4: new UniswapV4TransactionAdapter({ network: config.network, rpc, router: config.universalRouter }),
+  });
   return Object.freeze({
     chain: CHAIN_DESCRIPTORS[config.network],
-    quote: new UniswapV3QuoteAdapter({ network: config.network, rpc, quoter: config.quoter }),
-    transaction: new UniswapV3TransactionAdapter({ network: config.network, rpc, router: config.router }),
+    quote: new EvmVenueQuoteAdapter({ network: config.network, venues: quoteVenues, defaultVenue: config.defaultVenue }),
+    transaction: new EvmVenueTransactionAdapter({ network: config.network, venues: transactionVenues, defaultVenue: config.defaultVenue }),
     wallet: config.wallet,
     relays: new HealthWeightedRelayRouter(createEvmRelayAdapters(config)),
     confirmation: new EvmConfirmationAdapter({

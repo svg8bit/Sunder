@@ -4,6 +4,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function sanitizedRelayError(error: unknown): string {
+  const name = error instanceof Error ? error.name : "RelayError";
+  const message = errorMessage(error)
+    .replace(/https?:\/\/[^\s)\]}]+/giu, "[redacted-endpoint]")
+    .replace(/\b(token|key|auth|signature)=([^&\s]+)/giu, "$1=[redacted]")
+    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [redacted]");
+  return `${name}: ${message}`.slice(0, 512);
+}
+
 function score(health: RelayHealth): number {
   if (!health.enabled) return Number.NEGATIVE_INFINITY;
   const reliability = Math.max(0.01, 1 - health.failureRate);
@@ -39,7 +48,7 @@ export class HealthWeightedRelayRouter implements RelayRouter {
         kind: relay?.kind ?? "rpc",
         accepted: false,
         latencyMs: 0,
-        error: errorMessage(result.reason),
+        error: sanitizedRelayError(result.reason),
       } satisfies RelayReceipt;
     }));
   }
@@ -55,6 +64,7 @@ interface HttpRelayOptions {
   readonly fetcher?: typeof fetch;
   readonly mode?: "json-rpc" | "plain-base64";
   readonly rpcMethod?: "sendTransaction" | "eth_sendRawTransaction";
+  readonly timeoutMs?: number;
 }
 
 export class HttpRelayAdapter implements RelayAdapter {
@@ -66,6 +76,7 @@ export class HttpRelayAdapter implements RelayAdapter {
   readonly #fetcher: typeof fetch;
   readonly #mode: "json-rpc" | "plain-base64";
   readonly #rpcMethod: "sendTransaction" | "eth_sendRawTransaction";
+  readonly #timeoutMs: number;
   #latencyMs: number;
   #successes = 0;
   #failures = 0;
@@ -81,6 +92,7 @@ export class HttpRelayAdapter implements RelayAdapter {
     this.#fetcher = options.fetcher ?? fetch;
     this.#mode = options.mode ?? "json-rpc";
     this.#rpcMethod = options.rpcMethod ?? "sendTransaction";
+    this.#timeoutMs = options.timeoutMs ?? 5_000;
   }
 
   health(): RelayHealth {
@@ -117,7 +129,9 @@ export class HttpRelayAdapter implements RelayAdapter {
             ? [transaction.wireTransaction, { encoding: "base64", skipPreflight: true, maxRetries: 0 }]
             : [transaction.wireTransaction],
         });
-      const response = await this.#fetcher(this.#endpoint, { method: "POST", headers, body, signal });
+      const timeoutSignal = AbortSignal.timeout(this.#timeoutMs);
+      const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const response = await this.#fetcher(this.#endpoint, { method: "POST", headers, body, signal: requestSignal });
       const latencyMs = performance.now() - startedAt;
       this.#latencyMs = this.#latencyMs * 0.7 + latencyMs * 0.3;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -137,7 +151,7 @@ export class HttpRelayAdapter implements RelayAdapter {
         kind: this.kind,
         accepted: false,
         latencyMs: performance.now() - startedAt,
-        error: errorMessage(error),
+        error: sanitizedRelayError(error),
       };
     }
   }

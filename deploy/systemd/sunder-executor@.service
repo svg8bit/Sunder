@@ -1,0 +1,42 @@
+[Unit]
+Description=Sunder dual-chain execution service (%i)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/sunder/dist/executor/packages/executor/src/server.js
+
+[Service]
+Type=simple
+User=sunder
+Group=sunder
+WorkingDirectory=/opt/sunder
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/sunder/executor-%i.env
+ExecStart=/usr/local/bin/node /opt/sunder/dist/executor/packages/executor/src/server.js
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+UMask=0077
+StateDirectory=sunder-executor-%i
+RuntimeDirectory=sunder-executor-%i
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/sunder-executor-%i
+
+[Install]
+WantedBy=multi-user.target
