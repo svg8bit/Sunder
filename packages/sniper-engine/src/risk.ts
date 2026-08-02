@@ -1,4 +1,4 @@
-import type { RiskEngine, SniperEvent, SniperRule, Quote } from "./types.js";
+import type { ChainNetworkId, RiskEngine, SniperEvent, SniperRule, Quote } from "./types.js";
 
 export class RiskViolation extends Error {
   readonly code: string;
@@ -12,7 +12,15 @@ export class RiskViolation extends Error {
 
 interface SpendWindow {
   day: string;
-  lamports: bigint;
+  atomic: bigint;
+}
+
+interface Reservation {
+  readonly id: string;
+  readonly ruleId: string;
+  readonly network: ChainNetworkId;
+  readonly day: string;
+  readonly spendAtomic: bigint;
 }
 
 function utcDay(timestamp: number): string {
@@ -22,14 +30,22 @@ function utcDay(timestamp: number): string {
 export class BoundedRiskEngine implements RiskEngine {
   #killSwitch = false;
   readonly #unlockedProductionNetworks: ReadonlySet<SniperEvent["network"]>;
+  readonly #networkDailyLimits: Readonly<Partial<Record<ChainNetworkId, bigint>>>;
   readonly #lastExecutionByRule = new Map<string, number>();
   readonly #dailySpendByRule = new Map<string, SpendWindow>();
+  readonly #dailySpendByNetwork = new Map<ChainNetworkId, SpendWindow>();
+  readonly #reservations = new Map<string, Reservation>();
+  #reservationSequence = 0;
 
-  constructor(options: { readonly unlockedProductionNetworks?: readonly SniperEvent["network"][] } = {}) {
+  constructor(options: {
+    readonly unlockedProductionNetworks?: readonly SniperEvent["network"][];
+    readonly networkDailyLimits?: Readonly<Partial<Record<ChainNetworkId, bigint>>>;
+  } = {}) {
     this.#unlockedProductionNetworks = new Set(options.unlockedProductionNetworks ?? []);
+    this.#networkDailyLimits = Object.freeze({ ...options.networkDailyLimits });
   }
 
-  assertEvent(event: SniperEvent, rule: SniperRule, spendAtomic: bigint, now = Date.now()): void {
+  assertEvent(event: SniperEvent, rule: SniperRule, spendAtomic: bigint, now = Date.now()): string {
     if (this.#killSwitch) throw new RiskViolation("kill-switch", "Execution kill switch is active.");
     if ((event.network === "solana:mainnet" || event.network === "evm:mainnet") && !this.#unlockedProductionNetworks.has(event.network)) {
       throw new RiskViolation("mainnet-locked", `${event.network} execution is locked by policy.`);
@@ -44,10 +60,28 @@ export class BoundedRiskEngine implements RiskEngine {
     }
     const day = utcDay(now);
     const window = this.#dailySpendByRule.get(rule.id);
-    const spent = window?.day === day ? window.lamports : 0n;
+    const spent = window?.day === day ? window.atomic : 0n;
     if (spent + spendAtomic > rule.maxDailySpendAtomic) {
       throw new RiskViolation("daily-spend", "Requested spend exceeds the daily limit.");
     }
+    const networkLimit = this.#networkDailyLimits[event.network];
+    const networkWindow = this.#dailySpendByNetwork.get(event.network);
+    const networkSpent = networkWindow?.day === day ? networkWindow.atomic : 0n;
+    if (networkLimit !== undefined && networkSpent + spendAtomic > networkLimit) {
+      throw new RiskViolation("network-daily-spend", "Requested spend exceeds the executor network daily limit.");
+    }
+    const reservationId = `${rule.id}:${now}:${++this.#reservationSequence}`;
+    this.#dailySpendByRule.set(rule.id, { day, atomic: spent + spendAtomic });
+    this.#dailySpendByNetwork.set(event.network, { day, atomic: networkSpent + spendAtomic });
+    this.#lastExecutionByRule.set(rule.id, now);
+    this.#reservations.set(reservationId, {
+      id: reservationId,
+      ruleId: rule.id,
+      network: event.network,
+      day,
+      spendAtomic,
+    });
+    return reservationId;
   }
 
   assertQuote(rule: SniperRule, quote: Quote, now = Date.now()): void {
@@ -70,15 +104,39 @@ export class BoundedRiskEngine implements RiskEngine {
     }
   }
 
-  recordConfirmed(rule: SniperRule, spendAtomic: bigint, confirmedAt = Date.now()): void {
-    const day = utcDay(confirmedAt);
-    const current = this.#dailySpendByRule.get(rule.id);
-    const lamports = current?.day === day ? current.lamports + spendAtomic : spendAtomic;
-    this.#dailySpendByRule.set(rule.id, { day, lamports });
-    this.#lastExecutionByRule.set(rule.id, confirmedAt);
+  recordConfirmed(reservationId: string, confirmedAt = Date.now()): void {
+    const reservation = this.#reservations.get(reservationId);
+    if (!reservation) throw new RiskViolation("unknown-reservation", "Risk reservation is missing or already settled.");
+    this.#reservations.delete(reservationId);
+    const previousExecution = this.#lastExecutionByRule.get(reservation.ruleId);
+    if (previousExecution === undefined || confirmedAt > previousExecution) {
+      this.#lastExecutionByRule.set(reservation.ruleId, confirmedAt);
+    }
+  }
+
+  release(reservationId: string): void {
+    const reservation = this.#reservations.get(reservationId);
+    if (!reservation) return;
+    this.#reservations.delete(reservationId);
+    this.#subtractReservation(reservation);
   }
 
   setKillSwitch(enabled: boolean): void {
     this.#killSwitch = enabled;
+  }
+
+  #subtractReservation(reservation: Reservation): void {
+    const ruleWindow = this.#dailySpendByRule.get(reservation.ruleId);
+    if (ruleWindow?.day === reservation.day) {
+      const remaining = ruleWindow.atomic - reservation.spendAtomic;
+      if (remaining > 0n) this.#dailySpendByRule.set(reservation.ruleId, { ...ruleWindow, atomic: remaining });
+      else this.#dailySpendByRule.delete(reservation.ruleId);
+    }
+    const networkWindow = this.#dailySpendByNetwork.get(reservation.network);
+    if (networkWindow?.day === reservation.day) {
+      const remaining = networkWindow.atomic - reservation.spendAtomic;
+      if (remaining > 0n) this.#dailySpendByNetwork.set(reservation.network, { ...networkWindow, atomic: remaining });
+      else this.#dailySpendByNetwork.delete(reservation.network);
+    }
   }
 }

@@ -21,6 +21,20 @@ function observation(status: RpcSignatureStatus): ConfirmationObservation {
   return { state, observedAt: Date.now(), blockOrSlot: status.slot, error: status.error };
 }
 
+const STATUS_RANK: Readonly<Record<NonNullable<RpcSignatureStatus["confirmationStatus"]>, number>> = Object.freeze({
+  processed: 1,
+  confirmed: 2,
+  finalized: 3,
+});
+
+function shouldReplaceStatus(next: RpcSignatureStatus, current: RpcSignatureStatus | null): boolean {
+  if (!current || next.error) return true;
+  if (current.error) return false;
+  const nextRank = next.confirmationStatus ? STATUS_RANK[next.confirmationStatus] : 0;
+  const currentRank = current.confirmationStatus ? STATUS_RANK[current.confirmationStatus] : 0;
+  return nextRank >= currentRank;
+}
+
 export class SolanaConfirmationAdapter implements ConfirmationAdapter {
   readonly id = "solana-rpc-confirmation";
   readonly networks: readonly ChainNetworkId[];
@@ -47,7 +61,7 @@ export class SolanaConfirmationAdapter implements ConfirmationAdapter {
     let subscriptionStatus: RpcSignatureStatus | null = null;
     if (this.#rpc.subscribeSignature) {
       void Promise.resolve(this.#rpc.subscribeSignature(transaction.signature, (status) => {
-        subscriptionStatus = status;
+        if (shouldReplaceStatus(status, subscriptionStatus)) subscriptionStatus = status;
       }, combined)).catch(() => {
         // Polling below is the required fallback when subscriptions fail.
       });

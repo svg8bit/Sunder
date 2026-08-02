@@ -32,14 +32,16 @@ export class BoundedRetryController implements RetryController {
     if (context.confirmation?.state === "failed") {
       return { retry: false, refreshTransaction: false, delayMs: 0, reason: "onchain-failure" };
     }
-    const refreshTransaction = context.confirmation?.state === "expired" || context.confirmation?.state === "reorged";
+    const refreshTransaction = context.confirmation?.state === "expired";
     const exponential = Math.min(this.#maxDelayMs, this.#baseDelayMs * 2 ** (context.attempt - 1));
     const jitter = exponential * this.#jitterRatio * (this.#random() * 2 - 1);
     return {
       retry: true,
       refreshTransaction,
       delayMs: Math.max(0, Math.round(exponential + jitter)),
-      reason: refreshTransaction ? "transaction-refresh-required" : "bounded-rebroadcast",
+      reason: context.confirmation?.state === "reorged"
+        ? "track-original-after-reorg"
+        : refreshTransaction ? "transaction-refresh-required" : "bounded-rebroadcast",
     };
   }
 
@@ -47,11 +49,18 @@ export class BoundedRetryController implements RetryController {
     if (!decision.retry || decision.delayMs === 0) return;
     if (signal?.aborted) throw abortError();
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(resolve, decision.delayMs);
-      signal?.addEventListener("abort", () => {
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
-        reject(abortError());
-      }, { once: true });
+        signal?.removeEventListener("abort", onAbort);
+        callback();
+      };
+      const onAbort = () => finish(() => reject(abortError()));
+      const timeout = setTimeout(() => finish(resolve), decision.delayMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
 }

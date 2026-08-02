@@ -71,28 +71,40 @@ function priceImpactBps(input: BN, output: BN, probeInput: BN, probeOutput: BN):
   return baselineOutput.sub(output).muln(10_000).div(baselineOutput).toNumber();
 }
 
+async function withAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) throw new DOMException("Operation aborted", "AbortError");
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("Operation aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 export class PumpQuoteAdapter implements QuoteAdapter {
   readonly id = "pump-sdk-1.36.0";
   readonly networks: readonly ChainNetworkId[];
   readonly #connection: Connection;
   readonly #onlineSdk: OnlinePumpSdk;
 
-  constructor(network: SolanaAdapterConfig["network"], rpcUrl: string, websocketUrl?: string) {
+  constructor(network: SolanaAdapterConfig["network"], connection: Connection) {
     this.networks = Object.freeze([network]);
-    this.#connection = new Connection(rpcUrl, {
-      commitment: "confirmed",
-      wsEndpoint: websocketUrl,
-    });
+    this.#connection = connection;
     this.#onlineSdk = new OnlinePumpSdk(this.#connection);
   }
 
-  async quote(request: QuoteRequest): Promise<Quote> {
+  async quote(request: QuoteRequest, signal?: AbortSignal): Promise<Quote> {
     assertSolanaNetwork(request.chain.id);
+    if (request.rule.maxSlippageBps < 0 || request.rule.maxSlippageBps >= 10_000) {
+      throw new Error("maxSlippageBps must be within [0, 10000).");
+    }
     const mint = requirePublicKey(request.event.target ?? request.event.mint, "Pump mint");
-    const global = await this.#onlineSdk.fetchGlobal();
-    const feeConfig = await this.#onlineSdk.fetchFeeConfig();
-    const bondingCurve = await this.#onlineSdk.fetchBondingCurve(mint);
-    const supply = await this.#connection.getTokenSupply(mint, "confirmed");
+    const [global, feeConfig, bondingCurve, supply] = await withAbort(Promise.all([
+      this.#onlineSdk.fetchGlobal(),
+      this.#onlineSdk.fetchFeeConfig(),
+      this.#onlineSdk.fetchBondingCurve(mint),
+      this.#connection.getTokenSupply(mint, "confirmed"),
+    ]), signal);
     const mintSupply = new BN(supply.value.amount);
     const input = new BN(request.inputAmountAtomic.toString());
     const quoteMint = new PublicKey(WRAPPED_SOL_MINT);
@@ -147,20 +159,23 @@ export class PumpTransactionAdapter implements TransactionAdapter {
   readonly #offlineSdk = new PumpSdk();
   readonly #tipRecipient?: PublicKey;
 
-  constructor(config: Pick<SolanaAdapterConfig, "network" | "rpcUrl" | "websocketUrl" | "relayTipRecipient">) {
+  constructor(config: Pick<SolanaAdapterConfig, "network" | "relayTipRecipient">, connection: Connection) {
     this.networks = Object.freeze([config.network]);
-    this.#connection = new Connection(config.rpcUrl, { commitment: "confirmed", wsEndpoint: config.websocketUrl });
+    this.#connection = connection;
     this.#onlineSdk = new OnlinePumpSdk(this.#connection);
     this.#tipRecipient = config.relayTipRecipient ? requirePublicKey(config.relayTipRecipient, "Relay tip recipient") : undefined;
   }
 
-  async build(input: Parameters<TransactionAdapter["build"]>[0]): Promise<TransactionDraft> {
+  async build(input: Parameters<TransactionAdapter["build"]>[0], signal?: AbortSignal): Promise<TransactionDraft> {
     assertSolanaNetwork(input.chain.id);
     if (input.feePolicy.kind !== "solana") throw new Error("PumpTransactionAdapter requires a Solana fee policy.");
     const mint = requirePublicKey(input.event.target ?? input.event.mint, "Pump mint");
     const user = requirePublicKey(input.event.account, "Wallet address");
-    const global = await this.#onlineSdk.fetchGlobal();
-    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = await this.#onlineSdk.fetchBuyState(mint, user, TOKEN_PROGRAM_ID);
+    const [global, buyState] = await withAbort(Promise.all([
+      this.#onlineSdk.fetchGlobal(),
+      this.#onlineSdk.fetchBuyState(mint, user, TOKEN_PROGRAM_ID),
+    ]), signal);
+    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = buyState;
     const tokenAmount = new BN(input.quote.expectedOutputAmount.toString());
     const solAmount = new BN(input.quote.inputAmountAtomic.toString());
     const slippage = Math.max(0, (input.quote.expectedOutputAmount === 0n
@@ -186,7 +201,7 @@ export class PumpTransactionAdapter implements TransactionAdapter {
       if (!this.#tipRecipient) throw new Error("A verified relay tip recipient is required when tipLamports is non-zero.");
       feeInstructions.push(SystemProgram.transfer({ fromPubkey: user, toPubkey: this.#tipRecipient, lamports: input.feePolicy.tipLamports }));
     }
-    const lifetimeResponse = await this.#connection.getLatestBlockhash("confirmed");
+    const lifetimeResponse = await withAbort(this.#connection.getLatestBlockhash("confirmed"), signal);
     const transaction = new Transaction({
       feePayer: user,
       blockhash: lifetimeResponse.blockhash,
@@ -211,15 +226,18 @@ export class PumpTransactionAdapter implements TransactionAdapter {
     });
   }
 
-  async simulate(transaction: TransactionDraft): Promise<SimulationResult> {
+  async simulate(transaction: TransactionDraft, signal?: AbortSignal): Promise<SimulationResult> {
     if (transaction.chain.family !== "solana") throw new Error("Expected a Solana transaction.");
     const decoded = Transaction.from(Buffer.from(transaction.unsignedPayload, "base64"));
-    const result = await this.#connection.simulateTransaction(decoded);
+    const result = await withAbort(this.#connection.simulateTransaction(decoded), signal);
+    const priorityFeeLamports = transaction.feePolicy.kind === "solana"
+      ? (BigInt(transaction.feePolicy.computeUnitLimit) * transaction.feePolicy.computeUnitPriceMicroLamports + 999_999n) / 1_000_000n
+      : 0n;
     return Object.freeze({
       ok: result.value.err === null,
       simulatedAt: Date.now(),
       unitsConsumed: BigInt(result.value.unitsConsumed ?? 0),
-      estimatedFeeAtomic: transaction.feePolicy.kind === "solana" ? 5_000n + transaction.feePolicy.tipLamports : 0n,
+      estimatedFeeAtomic: transaction.feePolicy.kind === "solana" ? 5_000n + transaction.feePolicy.tipLamports + priorityFeeLamports : 0n,
       logs: Object.freeze(result.value.logs ?? []),
       accountDiff: Object.freeze({}),
       error: result.value.err === null ? undefined : JSON.stringify(result.value.err),
@@ -294,8 +312,8 @@ export function createSolanaChainAdapter(config: SolanaAdapterConfig): ChainAdap
   });
   return Object.freeze({
     chain: CHAIN_DESCRIPTORS[config.network],
-    quote: new PumpQuoteAdapter(config.network, config.rpcUrl, config.websocketUrl),
-    transaction: new PumpTransactionAdapter(config),
+    quote: new PumpQuoteAdapter(config.network, connection),
+    transaction: new PumpTransactionAdapter(config, connection),
     wallet: config.wallet,
     relays: new HealthWeightedRelayRouter(relays),
     confirmation: new SolanaConfirmationAdapter(createConfirmationRpc(connection), {

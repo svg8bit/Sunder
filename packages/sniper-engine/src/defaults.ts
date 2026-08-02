@@ -22,7 +22,18 @@ function stableHash(value: string): string {
 }
 
 function base64(value: string): string {
-  return globalThis.btoa(value);
+  let binary = "";
+  for (const byte of new TextEncoder().encode(value)) binary += String.fromCharCode(byte);
+  return globalThis.btoa(binary);
+}
+
+const PRODUCTION_NETWORKS: ReadonlySet<ChainNetworkId> = new Set(["solana:mainnet", "evm:mainnet"]);
+
+function assertTestNetworks(adapterId: string, networks: readonly ChainNetworkId[]): void {
+  const production = networks.filter((network) => PRODUCTION_NETWORKS.has(network));
+  if (production.length > 0) {
+    throw new Error(`${adapterId} must not be used on production networks: ${production.join(", ")}.`);
+  }
 }
 
 export class StaticQuoteAdapter implements QuoteAdapter {
@@ -30,6 +41,7 @@ export class StaticQuoteAdapter implements QuoteAdapter {
   readonly networks: readonly ChainNetworkId[];
 
   constructor(networks: readonly ChainNetworkId[] = ["solana:devnet", "evm:sepolia"]) {
+    assertTestNetworks(this.id, networks);
     this.networks = Object.freeze([...networks]);
   }
 
@@ -59,7 +71,9 @@ export class ManifestTransactionAdapter implements TransactionAdapter {
     readonly networks?: readonly ChainNetworkId[];
     readonly getLifetime: (network: ChainNetworkId, previous?: TransactionDraft) => Promise<ChainLifetime>;
   }) {
-    this.networks = Object.freeze([...(options.networks ?? ["solana:devnet", "evm:sepolia"])]);
+    const networks = options.networks ?? ["solana:devnet", "evm:sepolia"];
+    assertTestNetworks(this.id, networks);
+    this.networks = Object.freeze([...networks]);
     this.#getLifetime = options.getLifetime;
   }
 
@@ -117,6 +131,7 @@ export class TestWalletAdapter implements WalletAdapter {
   readonly networks: readonly ChainNetworkId[];
 
   constructor(networks: readonly ChainNetworkId[] = ["solana:devnet", "evm:sepolia"]) {
+    assertTestNetworks(this.id, networks);
     this.networks = Object.freeze([...networks]);
   }
 

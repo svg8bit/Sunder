@@ -26,7 +26,11 @@ export default tseslint.config(
     languageOptions: {
       globals: {
         console: "readonly",
+        Headers: "readonly",
         process: "readonly",
+        Request: "readonly",
+        Response: "readonly",
+        URL: "readonly",
       },
     },
   },

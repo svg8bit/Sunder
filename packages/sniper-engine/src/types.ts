@@ -73,6 +73,8 @@ export type ConfirmationState =
 export interface SniperEvent {
   readonly id: string;
   readonly source: EventSourceKind;
+  readonly sourceCursor?: string;
+  readonly sourceAccount?: string;
   readonly kind: EventKind;
   readonly network: ChainNetworkId;
   readonly receivedAt: number;
@@ -373,10 +375,11 @@ export interface RetryController {
 }
 
 export interface RiskEngine {
-  assertEvent(event: SniperEvent, rule: SniperRule, spendAtomic: bigint, now?: number): void;
+  assertEvent(event: SniperEvent, rule: SniperRule, spendAtomic: bigint, now?: number): string;
   assertQuote(rule: SniperRule, quote: Quote, now?: number): void;
   assertAttempt(event: SniperEvent, rule: SniperRule, attempt: number): void;
-  recordConfirmed(rule: SniperRule, spendAtomic: bigint, confirmedAt?: number): void;
+  recordConfirmed(reservationId: string, confirmedAt?: number): void;
+  release(reservationId: string): void;
   setKillSwitch(enabled: boolean): void;
 }
 
