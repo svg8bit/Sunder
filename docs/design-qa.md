@@ -38,3 +38,7 @@ Additional viewport evidence:
 ## Automated Browser result
 
 Playwright ran the full two-project suite with one worker to stay inside the VPS memory envelope: **10 passed, 2 intentionally skipped** (each viewport skips only the evidence case belonging to the other viewport). The suite includes a controlled EIP-1193/Sepolia RPC flow that remains `submitted` until a canonical receipt is released, then verifies the exact zero-value self-transfer intent before showing `confirmed`. There were no failures. Reproduce with `npm run test:e2e`.
+
+## Solana live terminal follow-up
+
+The user-provided Axiom terminal was subsequently used as an equal-size `1280 x 653` source target for the Solana-first `/swap` implementation. The required same-input full-view comparison, focused trade-dock comparison, three blocked iteration passes, final production desktop/mobile captures, interaction evidence, console checks, and final result are recorded in the project-root [`design-qa.md`](../design-qa.md).

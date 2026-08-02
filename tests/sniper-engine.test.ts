@@ -8,6 +8,7 @@ import {
   HttpRelayAdapter,
   ManifestTransactionAdapter,
   MemoryAuditSink,
+  planWalletBasket,
   SniperEngine,
   StaticQuoteAdapter,
   TestWalletAdapter,
@@ -310,6 +311,71 @@ describe("SniperEngine confirmation invariant", () => {
 
     expect(() => risk.assertEvent(request(network).event, anotherRule, 1n, dayOne + 1_000)).toThrow(/network daily limit/);
     expect(risk.assertEvent(request(network).event, anotherRule, 10_000n, dayTwo + 1_000)).toMatch(/^rule-2:/);
+  });
+
+  it("stops an armed rule after three canonical confirmations", () => {
+    const network = "solana:devnet";
+    const risk = new BoundedRiskEngine();
+    const burstRule = rule(network, { cooldownMs: 0, maxConfirmedExecutions: 3 });
+    for (let index = 0; index < 3; index += 1) {
+      const reservation = risk.assertEvent(
+        { ...request(network).event, id: `burst-${index}`, sourceCursor: `burst-${index}` },
+        burstRule,
+        10_000n,
+        1_000 + index,
+      );
+      risk.recordConfirmed(reservation, 1_000 + index);
+    }
+
+    expect(risk.confirmedExecutions(burstRule.id)).toBe(3);
+    expect(() => risk.assertEvent(request(network).event, burstRule, 10_000n, 3_000)).toThrow(/canonical confirmation limit/);
+  });
+});
+
+describe("wallet basket planning", () => {
+  it("plans at most three signing-capable wallets and never treats watch-only addresses as signers", () => {
+    const plan = planWalletBasket({
+      totalAtomic: 1_000n,
+      members: [
+        { id: "connected", label: "Connected", address: "wallet-a", capability: "wallet-standard", enabled: true, weightBps: 4_000 },
+        { id: "watch", label: "Watch", address: "wallet-watch", capability: "watch-only", enabled: true, weightBps: 1_000 },
+        { id: "executor-1", label: "Executor 1", address: "wallet-b", capability: "executor-signer", enabled: true, weightBps: 3_000 },
+        { id: "executor-2", label: "Executor 2", address: "wallet-c", capability: "executor-signer", enabled: true, weightBps: 2_000 },
+        { id: "executor-3", label: "Executor 3", address: "wallet-d", capability: "executor-signer", enabled: true, weightBps: 1_000 },
+      ],
+      maxConfirmedExecutions: 3,
+      initialDelayMs: 10,
+      interWalletDelayMs: 50,
+    });
+
+    expect(plan.steps).toHaveLength(3);
+    expect(plan.steps.reduce((sum, step) => sum + step.amountAtomic, 0n)).toBe(1_000n);
+    expect(plan.steps.map((step) => step.delayMs)).toEqual([10, 60, 110]);
+    expect(plan.exclusions).toEqual(expect.arrayContaining([
+      { walletId: "watch", reason: "watch-only" },
+      { walletId: "executor-3", reason: "burst-cap" },
+    ]));
+  });
+
+  it("rejects a basket that would create a zero-amount execution", () => {
+    expect(() => planWalletBasket({
+      totalAtomic: 1n,
+      members: [
+        { id: "one", label: "One", address: "wallet-one", capability: "wallet-standard", enabled: true, weightBps: 5_000 },
+        { id: "two", label: "Two", address: "wallet-two", capability: "executor-signer", enabled: true, weightBps: 5_000 },
+      ],
+    })).toThrow(/at least one atomic unit/);
+  });
+
+  it("gives every valid selected signer one atomic unit before weighted distribution", () => {
+    const plan = planWalletBasket({
+      totalAtomic: 2n,
+      members: [
+        { id: "heavy", label: "Heavy", address: "wallet-heavy", capability: "wallet-standard", enabled: true, weightBps: 9_999 },
+        { id: "light", label: "Light", address: "wallet-light", capability: "executor-signer", enabled: true, weightBps: 1 },
+      ],
+    });
+    expect(plan.steps.map((step) => step.amountAtomic)).toEqual([1n, 1n]);
   });
 });
 

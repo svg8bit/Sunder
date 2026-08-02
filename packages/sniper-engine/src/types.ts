@@ -104,6 +104,12 @@ export interface SniperRule {
   readonly maxPriceImpactBps: number;
   readonly cooldownMs: number;
   readonly maxAttempts: number;
+  /**
+   * Maximum number of canonically confirmed executions for one armed rule id.
+   * A fresh arm must use a fresh rule id. Omit only for backwards-compatible,
+   * explicitly unbounded test fixtures.
+   */
+  readonly maxConfirmedExecutions?: number;
 }
 
 export interface RuleDecision {

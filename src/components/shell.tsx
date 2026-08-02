@@ -105,7 +105,7 @@ export function AppShell({ children, route, navigate }: { readonly children: Rea
   const { audit } = useWorkspace();
   const nav = useMemo(() => routes, []);
   return (
-    <div className="app-shell">
+    <div className={cn("app-shell", route === "swap" && "app-shell--terminal")}>
       <header className="topbar">
         <Brand onClick={() => navigate("launch")} />
         <nav className="topnav" aria-label="Primary navigation">
@@ -160,7 +160,7 @@ export function AppShell({ children, route, navigate }: { readonly children: Rea
       <footer className="statusbar">
         <span><span className="statusbar__dot" /> Console online</span>
         <span><Bot size={13} /> Executor <strong>not configured</strong></span>
-        <span><ShieldCheck size={13} /> Mainnet <strong>locked</strong></span>
+        <span><ShieldCheck size={13} /> Automation <strong>locked</strong></span>
         <span><Gauge size={13} /> RPC confirmation required</span>
       </footer>
     </div>

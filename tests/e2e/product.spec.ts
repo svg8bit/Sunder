@@ -206,6 +206,22 @@ test("all mobile product routes stay within the viewport", async ({ page }, test
   for (const route of ["dashboard", "projects", "wallets", "xid", "leaders", "launch", "sniper", "swap", "tracker", "settings", "audit", "docs"] as const) {
     await page.goto(`/${route}`);
     await expectNoHorizontalOverflow(page);
+    if (route === "swap") {
+      await expect(page.locator(".terminal-workspace")).toBeVisible();
+      await expect(page.locator(".terminal-trade-dock")).toBeVisible();
+      const terminalFlow = await page.evaluate(() => {
+        const workspace = document.querySelector<HTMLElement>(".terminal-workspace");
+        const dock = document.querySelector<HTMLElement>(".terminal-trade-dock");
+        if (!workspace || !dock) throw new Error("Trading terminal layout is missing.");
+        const workspaceBox = workspace.getBoundingClientRect();
+        const dockBox = dock.getBoundingClientRect();
+        return {
+          workspaceBottom: workspaceBox.bottom + window.scrollY,
+          dockTop: dockBox.top + window.scrollY,
+        };
+      });
+      expect(terminalFlow.dockTop).toBeGreaterThanOrEqual(terminalFlow.workspaceBottom - 1);
+    }
   }
   await page.goto("/sniper");
   await selectEvm(page);

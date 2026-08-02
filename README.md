@@ -2,7 +2,7 @@
 
 Sunder is a self-custody Solana and Ethereum execution console with launch, wallet, sniper, swap, task, tracking and audit workflows. It is an independent product with familiar operational labels and a strict rule: provider acceptance, simulation, or a predicted address is never reported as on-chain success.
 
-The application supports Solana Mainnet and Ethereum Mainnet as product modes. Devnet and Sepolia are the safe verification environments. Funded Mainnet execution is implemented behind explicit readiness gates and remains locked until RPC, signer, relay, funding, budgets and operator confirmation are configured.
+The application supports Solana Mainnet and Ethereum Mainnet as product modes. Devnet and Sepolia are the safe automated verification environments. Interactive Solana Mainnet swaps can be simulated and explicitly signed by a connected browser wallet; persistent funded Mainnet automation remains locked until RPC, signer, relay, funding, budgets and operator confirmation are configured.
 
 ## Product areas
 
@@ -10,6 +10,7 @@ The application supports Solana Mainnet and Ethereum Mainnet as product modes. D
 - Launch Studio with Quick Deploy, Bundle, Snipe, LBS and Dev only modes
 - Chain-agnostic P0 Sniper Engine
 - Swap Manager, Buy Tasks, Auto TP, Smart Sell and Anti-Sniper
+- Solana live terminal with recent-pool discovery, confirmed Pump trade events, direct Jupiter quotes and exact confirmed realized net cash-flow PnL for tracked inventory; unvalued holdings and incomplete history remain explicitly excluded
 - Tracker, notifications, Audit Trail, Settings and in-product Docs
 - Solana Wallet Standard and EVM EIP-1193 browser-wallet verification
 - Separate persistent executor with Unix-socket signing and JSONL audit
@@ -26,7 +27,7 @@ EventSource -> RuleEvaluator -> QuoteAdapter -> TransactionAdapter -> Simulator
   -> bounded RetryController -> RiskEngine -> AuditSink
 ```
 
-Solana adapters cover Pump quoting/building, fresh blockhashes, compute-unit policy, RPC/Jito/Nozomi/0slot submission and signature confirmation. EVM adapters cover Uniswap V2/V3/V4-aware routing, EIP-1559 nonce-preserving replacement, standard RPC/Flashbots Protect and canonical receipt/finality/reorg tracking.
+Solana adapters cover Pump quoting/building, fresh blockhashes, compute-unit policy, RPC/Jito/Nozomi/0slot submission and signature confirmation. The browser Mainnet terminal adds live Jupiter-indexed pools, confirmed Pump `TradeEvent` streaming and direct Jupiter Swap V2 transaction manifests with `platformFeeBps=0`. It runs unsigned and signed simulation, then records exact wallet deltas only after canonical RPC confirmation. Pump/AMM, network, priority, rent and optional relay fees still apply; only Sunder's platform fee is zero. EVM adapters cover Uniswap V2/V3/V4-aware routing, EIP-1559 nonce-preserving replacement, standard RPC/Flashbots Protect and canonical receipt/finality/reorg tracking.
 
 See [Architecture](docs/ARCHITECTURE.md), [Production readiness](docs/PRODUCTION_READINESS.md), [Executor runbook](docs/EXECUTOR_RUNBOOK.md), [rendered design QA](docs/design-qa.md) and the mandatory [handoff source of truth](docs/HANDOFF.md).
 
@@ -40,6 +41,8 @@ npm run dev
 ```
 
 Copy `.env.example` only when custom public RPC endpoints or executor configuration are needed. Never add private keys, seeds, mnemonics or secret keys to `.env` or the browser.
+
+The committed Solana Mainnet fallback is PublicNode because its HTTP and WebSocket endpoints were verified from the browser build. It is shared, best-effort infrastructure. Configure a project-scoped browser-safe RPC before funded use; signer or relay credentials belong only in the private executor/signing boundary.
 
 ## Verification
 
@@ -66,7 +69,7 @@ npx playwright test --project=desktop
 npx playwright test --project=mobile
 ```
 
-The rendered source comparison and current screenshots are recorded in [design-qa.md](docs/design-qa.md) and `artifacts/qa/`. Review Launch Studio, Sniper, Swap Manager, the family/network selector, wallet modal, mobile drawer, explorer links and Mainnet locks; confirm there is no horizontal overflow or browser-console error.
+The latest rendered source comparison and current screenshots are recorded in the project-root [design-qa.md](design-qa.md), with the earlier product-wide evidence retained in [docs/design-qa.md](docs/design-qa.md) and `artifacts/qa/`. Review Launch Studio, Sniper, Swap Manager, the family/network selector, wallet modal, mobile drawer, explorer links and Mainnet locks; confirm there is no horizontal overflow or browser-console error.
 
 ### Vercel release and production smoke
 

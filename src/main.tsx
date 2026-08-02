@@ -9,6 +9,7 @@ import { evmConfig } from "./evm/config";
 import { solanaClientFor } from "./solana/client";
 import { NetworkProvider, useNetwork } from "./state/network";
 import { WorkspaceProvider } from "./state/workspace";
+import { TradingProvider } from "./state/trading";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -40,7 +41,9 @@ createRoot(root).render(
       <WagmiProvider config={evmConfig}>
         <NetworkProvider>
           <WorkspaceProvider>
-            <ChainProviders />
+            <TradingProvider>
+              <ChainProviders />
+            </TradingProvider>
           </WorkspaceProvider>
         </NetworkProvider>
       </WagmiProvider>

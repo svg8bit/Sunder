@@ -44,6 +44,17 @@ Relay acceptance is recorded as `submitted`. Only Solana `confirmed`/`finalized`
 
 The browser verification path uses `@solana/client` and `@solana/react-hooks`: connect, balance, exact one-lamport Devnet self-transfer, unsigned simulation, signed simulation where possible, wallet submission and explicit RPC polling. The return value from transaction submission is not treated as confirmation.
 
+The Solana Mainnet trading terminal is a separate interactive, wallet-owned path:
+
+- Jupiter Tokens V2 `recent`/`search` supplies real new-pool discovery and bounded market metadata; malformed individual records are discarded without fabricating replacements.
+- A confirmed `logsSubscribe` on the official Pump program address decodes the current official `TradeEvent` discriminator/prefix and filters the selected mint. This powers the live tape and exposes actual protocol/creator fee basis points. A live PublicNode A/B probe observed `98` matching program-stream events but `0` notifications when the `mentions` filter was changed to the event mint, because that mint is not reliably present in the outer transaction account list; the program subscription plus decoded-mint filter is therefore intentional.
+- Jupiter Swap V2 `build` is requested with wrapped SOL, the selected mint, an exact amount, the connected taker and `platformFeeBps=0`.
+- API instructions and lookup tables are validated with Zod, converted to a versioned transaction, simulated without a signature to size compute units, rebuilt, then simulated again.
+- Wallet Standard signs the exact prepared transaction. Sunder runs signed simulation, submits with preflight, polls signature status and blockhash expiry, fetches `getTransaction`, validates the expected wallet/mint and derives exact SOL/token/fee/rent deltas.
+- Local PnL includes only those canonical confirmed deltas. Unvalued inventory never appears as realized profit. The first-three cap is enforced by the shared risk core and wallet-basket planner; watch-only addresses cannot become signers.
+
+The browser fallback uses PublicNode HTTP/WebSocket endpoints because both were rendered and exercised with browser CORS/WS. It is best-effort public infrastructure, not a production SLA; funded operation should set a project-scoped browser-safe RPC. Persistent or unattended Mainnet execution remains isolated behind the executor signer, funding, budget, relay and operator gates.
+
 ## Ethereum/EVM adapter
 
 `packages/chain-evm` uses viem-compatible RPC primitives and explicit EIP-1559 drafts. A pending nonce is preserved across replacement while `maxFeePerGas` and `maxPriorityFeePerGas` receive the configured bounded bump. `eth_call` and `estimateGas` both pass before signing.
@@ -81,6 +92,9 @@ The executor may be healthy while not ready. This is intentional: liveness prove
 - [Solana frontend integrations](https://solana.com/docs/frontend)
 - [Solana retry and confirmation guidance](https://solana.com/developers/guides/advanced/retry)
 - [Pump public docs](https://github.com/pump-fun/pump-public-docs)
+- [Jupiter Swap API V2](https://dev.jup.ag/docs/swap)
+- [Jupiter Tokens API](https://dev.jup.ag/docs/tokens)
+- [PublicNode Solana RPC/WS](https://solana.publicnode.com/)
 - [Jito low-latency transaction send](https://docs.jito.wtf/lowlatencytxnsend/)
 - [Nozomi transaction submission](https://use.temporal.xyz/nozomi/transaction-submission)
 - [0slot documentation](https://0slot.trade/docs.php)

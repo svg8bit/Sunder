@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sunder terminal trade-dock comparison</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 1120px; height: 390px; margin: 0; overflow: hidden; background: #000; }
+      main { display: grid; width: 1120px; height: 390px; grid-template-columns: 560px 560px; }
+      figure { position: relative; width: 560px; height: 390px; margin: 0; overflow: hidden; border-right: 1px solid #555; }
+      img { position: absolute; display: block; width: 1280px; height: 653px; max-width: none; object-fit: fill; }
+      .source img { top: -255px; left: -18px; }
+      .implementation img { top: -135px; left: -330px; }
+      figcaption { position: absolute; z-index: 1; top: 7px; left: 7px; padding: 5px 8px; border: 1px solid #666; background: rgba(0, 0, 0, .86); color: #fff; font: 13px system-ui; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <figure class="source"><figcaption>Source · quick trade + wallet basket</figcaption><img src="./axiom-reference.png" alt="Axiom quick trade and wallet basket" /></figure>
+      <figure class="implementation"><figcaption>Implementation · direct trade + sniper basket</figcaption><img src="./terminal-desktop-final-production.png" alt="Sunder direct trade and sniper basket" /></figure>
+    </main>
+  </body>
+</html>

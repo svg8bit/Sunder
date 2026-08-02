@@ -20,6 +20,7 @@ const sniperSchema = z.object({
   tip: z.number().min(0),
   cooldown: z.number().int().min(0).max(86_400),
   maxAttempts: z.number().int().min(1).max(10),
+  maxConfirmedExecutions: z.number().int().min(1).max(3),
   relay: z.string(),
   venue: z.enum(["auto", "v2", "v3", "v4"]),
   executionMode: z.enum(["single", "multi"]),
@@ -64,6 +65,7 @@ export function SniperScreen() {
       tip: family === "solana" ? 0.0002 : 0,
       cooldown: 30,
       maxAttempts: 3,
+      maxConfirmedExecutions: 3,
       relay: family === "solana" ? "health-weighted" : "rpc-protect",
       venue: "auto",
       executionMode: "single",
@@ -119,7 +121,7 @@ export function SniperScreen() {
       state: mainnetLocked ? "locked" : "local",
       network,
     });
-    toast.warning(mainnetLocked ? "Mainnet execution is locked by policy." : "Dry-run armed locally. Persistent executor is unconfigured.");
+    toast.warning(mainnetLocked ? "Persistent Mainnet sniper execution is locked by policy; manual wallet swaps remain separate." : "Dry-run armed locally. Persistent executor is unconfigured.");
   });
 
   const solanaRelayConfig = {
@@ -132,7 +134,7 @@ export function SniperScreen() {
     <div className="screen sniper-screen">
       <div className="screen-heading">
         <div><span className="eyebrow">P0 execution pipeline / {family.toUpperCase()}</span><h1>Sniper</h1><p>Rules, risk, simulation, relays and canonical confirmation in one bounded path.</p></div>
-        <div className="heading-actions"><Badge tone={mainnetLocked ? "warn" : "good"}>{mainnetLocked ? "Mainnet locked" : "Test mode"}</Badge><Button size="sm" onClick={() => setAdvanced((current) => !current)}>{advanced ? "Basic controls" : "Advanced controls"}</Button></div>
+        <div className="heading-actions"><Badge tone={mainnetLocked ? "warn" : "good"}>{mainnetLocked ? "Persistent executor locked" : "Test mode"}</Badge><Button size="sm" onClick={() => setAdvanced((current) => !current)}>{advanced ? "Basic controls" : "Advanced controls"}</Button></div>
       </div>
       <div className="sniper-layout">
         <form className="sniper-form" onSubmit={(event) => event.preventDefault()}>
@@ -152,6 +154,7 @@ export function SniperScreen() {
               <div className="field-row"><Field label="Max fee per gas"><div className="input-unit"><Input type="number" step="0.1" {...form.register("maxFee", { valueAsNumber: true })} /><span>Gwei</span></div></Field><Field label="Priority fee"><div className="input-unit"><Input type="number" step="0.1" {...form.register("priorityFee", { valueAsNumber: true })} /><span>Gwei</span></div></Field></div>
             )}
             <div className="field-row"><Field label="Cooldown"><div className="input-unit"><Input type="number" {...form.register("cooldown", { valueAsNumber: true })} /><span>s</span></div></Field><Field label="Attempt budget"><Input type="number" {...form.register("maxAttempts", { valueAsNumber: true })} /></Field></div>
+            <Field label="Canonical entry cap" hint="Stops this armed rule after the first 1–3 RPC-confirmed executions." error={form.formState.errors.maxConfirmedExecutions?.message}><Input type="number" min="1" max="3" {...form.register("maxConfirmedExecutions", { valueAsNumber: true })} /></Field>
           </Panel>
           <Panel title="Relay strategy" action={<Route size={17} />}>
             <Field label="Health-weighted routing"><Select {...form.register("relay")}>{family === "solana" ? <><option value="health-weighted">RPC + configured private relays</option><option value="rpc-only">Standard RPC only</option><option value="jito-primary">Jito primary</option></> : <><option value="rpc-protect">RPC + Flashbots Protect</option><option value="rpc-only">Standard RPC only</option><option value="flashbots-private">Private transaction adapter</option></>}</Select></Field>
@@ -180,12 +183,12 @@ export function SniperScreen() {
           </Panel>
           <Panel className="honesty-panel"><Info size={18} /><div><strong>No false success</strong><p>A relay response, predicted token address, or local simulation cannot produce a green execution state. Only a canonical signature/receipt does.</p></div></Panel>
           <Panel title="Current status">
-            <div className="status-list"><div><span>Rule</span><Badge tone={form.formState.isValid ? "good" : "warn"}>{form.formState.isValid ? "Valid" : "Incomplete"}</Badge></div><div><span>Simulation</span><Badge tone={simulationState === "passed" ? "good" : simulationState === "failed" ? "bad" : "neutral"}>{simulationState}</Badge></div><div><span>Executor</span><Badge tone="warn">Unconfigured</Badge></div><div><span>Funded Mainnet</span><Badge tone="warn">Locked</Badge></div></div>
+            <div className="status-list"><div><span>Rule</span><Badge tone={form.formState.isValid ? "good" : "warn"}>{form.formState.isValid ? "Valid" : "Incomplete"}</Badge></div><div><span>Simulation</span><Badge tone={simulationState === "passed" ? "good" : simulationState === "failed" ? "bad" : "neutral"}>{simulationState}</Badge></div><div><span>Executor</span><Badge tone="warn">Unconfigured</Badge></div><div><span>Persistent Mainnet</span><Badge tone="warn">Locked</Badge></div></div>
           </Panel>
         </aside>
       </div>
       <div className="sniper-actionbar">
-        <div className="environment-warning"><LockKeyhole size={20} /><div><strong>{chain.production ? `You are on ${chain.name}` : `Safe verification on ${chain.name}`}</strong><span>{chain.production ? "No funded order can run until every executor readiness gate passes." : "Dry-run and wallet verification are available; no persistent signer is connected."}</span></div></div>
+        <div className="environment-warning"><LockKeyhole size={20} /><div><strong>{chain.production ? `Persistent automation on ${chain.name}` : `Safe verification on ${chain.name}`}</strong><span>{chain.production ? "The executor stays locked until signer, RPC, relay, limits, funding and operator gates pass. Manual browser swaps remain separately user-signed." : "Dry-run and wallet verification are available; no persistent signer is connected."}</span></div></div>
         <div className="button-pair"><Button size="lg" onClick={() => void simulate()}><Play size={18} /> Run simulation</Button><Button size="lg" variant="primary" onClick={() => void arm()}><Crosshair size={18} /> {chain.production ? "Check Mainnet lock" : "Arm dry-run"}</Button></div>
         <div className="keys-note"><ShieldCheck size={14} /> Your keys never enter Sunder. Browser wallets sign interactive transactions; the executor uses a separate signer policy.</div>
       </div>

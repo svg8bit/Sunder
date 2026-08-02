@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sunder terminal comparison</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 2560px; height: 653px; margin: 0; overflow: hidden; background: #000; }
+      main { display: grid; width: 2560px; height: 653px; grid-template-columns: 1280px 1280px; }
+      figure { position: relative; width: 1280px; height: 653px; margin: 0; overflow: hidden; }
+      img { display: block; width: 1280px; height: 653px; object-fit: fill; }
+      figcaption { position: absolute; z-index: 1; top: 8px; left: 8px; padding: 5px 8px; border: 1px solid #666; background: rgba(0, 0, 0, .78); color: #fff; font: 13px system-ui; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <figure><figcaption>Source · Axiom</figcaption><img src="./axiom-reference.png" alt="Axiom source screenshot" /></figure>
+      <figure><figcaption>Implementation · Sunder production build</figcaption><img src="./terminal-desktop-final-production.png" alt="Sunder terminal production implementation" /></figure>
+    </main>
+  </body>
+</html>

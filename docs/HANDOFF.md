@@ -319,3 +319,18 @@ Use familiar control labels where functional/generic, but do not copy Vortex bra
 ## Definition of done
 
 Done means the repository and public production URL exist; the accepted UI is closely matched on desktop/mobile; navigation/core controls work; Solana and EVM product modes are implemented; wallet connection and safe Devnet/Sepolia transaction paths are verifiably executable; Solana Mainnet/Ethereum Mainnet adapters and readiness states exist; the dual-chain Sniper Engine is implemented and tested; relay/signer/funded-Mainnet configuration is explicit and locked when absent; build/tests/QA pass; and no existing ArcTrenches service or secret was touched.
+
+## 2026-08-02 implementation status addendum
+
+The earlier `Current local scaffold state` describes the repository at handoff time and is retained as history. The TypeScript application, chain adapters, executor, tests, product screens, and production deployment now exist.
+
+The Solana-first trading follow-up adds:
+
+- a live `/swap` Mainnet terminal backed by Jupiter Tokens V2 recent/search responses and confirmed Pump program `TradeEvent` logs;
+- direct Jupiter Swap V2 instruction manifests with exact input, `platformFeeBps=0`, bounded schema validation, lookup-table compression, simulation-derived compute limits, explicit Wallet Standard signing, signed simulation, standard-RPC submission, blockheight expiry, canonical confirmation, and exact confirmed balance deltas;
+- no success state before canonical RPC evidence, and no private-key or seed input in the web UI;
+- a persistent exact confirmed-cash-flow ledger that reports realized net PnL only for tracked inventory and labels incomplete inventory history;
+- a deterministic signer-aware wallet basket and a one-to-three canonical confirmation cap; watch-only wallets are never treated as signers;
+- the Axiom-like dense desktop composition and responsive mobile stack, with the complete iteration record in project-root `design-qa.md`.
+
+A read-only live Mainnet acceptance run observed a fresh confirmed Pump event, built a Jupiter `Pump.fun` route for `0.001 SOL`, and passed both unsigned RPC simulations with a `137186` compute-unit limit and `5004` lamport estimated network fee. It did not request a signature or submit a transaction. Interactive funded swaps still require the user's connected Wallet Standard signer and explicit approval. Persistent Mainnet sniper/launch execution remains locked until the runbook's RPC, signer, relay, funding, budget, and exact operator-confirmation gates are all satisfied.

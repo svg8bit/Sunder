@@ -5,13 +5,13 @@ import { useNetwork } from "./state/network";
 
 const LaunchStudioScreen = lazy(() => import("./screens/launch-studio").then((module) => ({ default: module.LaunchStudioScreen })));
 const SniperScreen = lazy(() => import("./screens/sniper").then((module) => ({ default: module.SniperScreen })));
+const TradingTerminalScreen = lazy(() => import("./screens/trading-terminal").then((module) => ({ default: module.TradingTerminalScreen })));
 const operations = () => import("./screens/operations");
 const DashboardScreen = lazy(() => operations().then((module) => ({ default: module.DashboardScreen })));
 const ProjectsScreen = lazy(() => operations().then((module) => ({ default: module.ProjectsScreen })));
 const WalletsScreen = lazy(() => operations().then((module) => ({ default: module.WalletsScreen })));
 const XidScreen = lazy(() => operations().then((module) => ({ default: module.XidScreen })));
 const LeadersScreen = lazy(() => operations().then((module) => ({ default: module.LeadersScreen })));
-const SwapManagerScreen = lazy(() => operations().then((module) => ({ default: module.SwapManagerScreen })));
 const AuditScreen = lazy(() => operations().then((module) => ({ default: module.AuditScreen })));
 const TrackerScreen = lazy(() => operations().then((module) => ({ default: module.TrackerScreen })));
 const SettingsScreen = lazy(() => operations().then((module) => ({ default: module.SettingsScreen })));
@@ -26,7 +26,7 @@ function Screen({ route, navigate }: { readonly route: RouteId; readonly navigat
     case "wallets": return <WalletsScreen />;
     case "xid": return <XidScreen />;
     case "leaders": return <LeadersScreen />;
-    case "swap": return <SwapManagerScreen />;
+    case "swap": return <TradingTerminalScreen />;
     case "audit": return <AuditScreen />;
     case "tracker": return <TrackerScreen />;
     case "settings": return <SettingsScreen />;

@@ -8,14 +8,15 @@ This matrix distinguishes implemented code from configured infrastructure and in
 | Browser wallet and balance | Wallet Standard implemented | Wallet Standard implemented | EIP-1193/wagmi implemented | EIP-1193/wagmi implemented |
 | Safe verification transaction | Executable one-lamport self-transfer; wallet/funds required | Test-only action disabled | Executable zero-value self-transfer; wallet/gas required | Test-only action disabled |
 | Launch adapter | Pump boundary implemented; no fabricated deploy | Pump quote/build implemented | Fixed-supply ERC-20 deploy implemented | Direct funded deploy locked |
-| Swap quote/build | Pump SDK quote/buy | Pump SDK quote/buy | V2/V3/V4 official paths | V2/V3/V4 official paths |
+| Swap quote/build | Pump SDK quote/buy | Interactive Jupiter Swap V2 build with `platformFeeBps=0`; Pump route observed | V2/V3/V4 official paths | V2/V3/V4 official paths |
 | Exact simulation | Implemented | Implemented | `eth_call` + `estimateGas` | `eth_call` + `estimateGas` |
+| Read-only live acceptance | Test fixtures only | Fresh confirmed Pump event → Jupiter `Pump.fun` route → two unsigned RPC simulations passed on 2026-08-02; `137186` CU and `5004` lamport fee estimate | Test fixtures only | Not run |
 | Relays | Standard RPC; private relays optional | RPC/Jito/Nozomi/0slot adapters; credentials absent | RPC/Flashbots adapter | RPC/Flashbots adapter; operator config absent |
 | Confirmation | Signature poll/subscription + expiry | Same | Receipt depth + canonical hash + replacement/reorg | Same |
 | Persistent executor | Built and service-tested | Built but locked | Built and service-tested | Built but locked |
 | External signer | Interface and socket protocol implemented; not provisioned | Not provisioned | Interface and socket protocol implemented; not provisioned | Not provisioned |
 | Funded on-chain acceptance evidence | Not run on this VPS; requires RPC signature and expected account/action state | Not run | Not run on this VPS; requires canonical receipt and exact transaction intent | Not run |
-| Current execution state | Requires test wallet, RPC and signer config | **Locked** | Requires test wallet, RPC and signer config | **Locked** |
+| Current execution state | Requires test wallet and funds | **Interactive wallet-signed swaps enabled; persistent executor locked** | Requires test wallet, RPC and signer config | **Locked** |
 
 ## What is working without further infrastructure
 
@@ -23,16 +24,20 @@ This matrix distinguishes implemented code from configured infrastructure and in
 - Local draft/project/watch-wallet/audit workflows with no secret storage or fake on-chain state.
 - Independent engine, Solana/EVM adapters, relay routing, retry, risk and confirmation tests.
 - Browser connect/balance/simulation/sign/confirmation code paths when a compatible wallet is present.
+- Solana Mainnet live recent-pool feed, confirmed Pump trade tape, direct zero-Sunder-fee Jupiter build/simulation/sign/submission path and exact confirmed wallet-delta ledger.
+- A live Mainnet read-only acceptance run used a current Pump event and active public taker to build and simulate a `0.001 SOL` buy twice through the Jupiter `Pump.fun` route. It did not request a signature, submit a transaction, or spend funds.
+- Per-arm canonical execution cap of one to three confirmations and deterministic signer-aware wallet-basket planning; watch-only addresses are excluded.
 - Fixed-supply ERC-20 bytecode generation and deployment encoding.
 - Executor build, liveness, readiness matrix, authentication, kill switch and Mainnet lock tests.
 
 ## What remains intentionally locked
 
-- Any funded Solana Mainnet or Ethereum Mainnet launch, swap or sniper execution.
+- Funded Solana Mainnet launch and unattended sniper execution; manual browser-wallet swaps are separately enabled and always user-signed.
+- Any funded Ethereum Mainnet launch, swap or sniper execution.
 - Persistent automated execution until a policy signer socket, exact public funding address and credential files are provisioned.
 - Solana private relays until their endpoints/credentials and verified tip recipient are configured.
 - Tax/CREATE2 launch factories until an audited/verified factory address and exact simulation path are configured.
-- Chart, PnL or token history until a confirmed indexer provides real data.
+- Complete historical/unrealized portfolio PnL until a project-scoped indexer and live valuation source are configured. The current ledger intentionally reports only confirmed session/browser history and excludes unvalued holdings.
 
 ## Dependency audit boundary
 

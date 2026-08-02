@@ -57,6 +57,7 @@ const ruleSchema = z.object({
   maxPriceImpactBps: z.number().int().min(0).max(10_000),
   cooldownMs: z.number().int().min(0).max(86_400_000),
   maxAttempts: z.number().int().min(1).max(10),
+  maxConfirmedExecutions: z.number().int().min(1).max(3).default(3),
 });
 const solanaFeeSchema = z.object({
   kind: z.literal("solana"),

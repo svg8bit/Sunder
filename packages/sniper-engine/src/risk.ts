@@ -34,6 +34,7 @@ export class BoundedRiskEngine implements RiskEngine {
   readonly #lastExecutionByRule = new Map<string, number>();
   readonly #dailySpendByRule = new Map<string, SpendWindow>();
   readonly #dailySpendByNetwork = new Map<ChainNetworkId, SpendWindow>();
+  readonly #confirmedExecutionsByRule = new Map<string, number>();
   readonly #reservations = new Map<string, Reservation>();
   #reservationSequence = 0;
 
@@ -53,6 +54,16 @@ export class BoundedRiskEngine implements RiskEngine {
     if (spendAtomic <= 0n) throw new RiskViolation("invalid-spend", "Spend must be positive.");
     if (spendAtomic > rule.maxSpendAtomic) {
       throw new RiskViolation("max-spend", "Requested spend exceeds the per-transaction limit.");
+    }
+    if (rule.maxConfirmedExecutions !== undefined) {
+      if (!Number.isInteger(rule.maxConfirmedExecutions) || rule.maxConfirmedExecutions < 1 || rule.maxConfirmedExecutions > 3) {
+        throw new RiskViolation("invalid-confirmed-execution-limit", "maxConfirmedExecutions must be an integer within [1, 3].");
+      }
+      const confirmed = this.#confirmedExecutionsByRule.get(rule.id) ?? 0;
+      const reserved = [...this.#reservations.values()].filter((reservation) => reservation.ruleId === rule.id).length;
+      if (confirmed + reserved >= rule.maxConfirmedExecutions) {
+        throw new RiskViolation("confirmed-execution-limit", "The armed rule reached its canonical confirmation limit.");
+      }
     }
     const previous = this.#lastExecutionByRule.get(rule.id);
     if (previous !== undefined && now - previous < rule.cooldownMs) {
@@ -108,6 +119,10 @@ export class BoundedRiskEngine implements RiskEngine {
     const reservation = this.#reservations.get(reservationId);
     if (!reservation) throw new RiskViolation("unknown-reservation", "Risk reservation is missing or already settled.");
     this.#reservations.delete(reservationId);
+    this.#confirmedExecutionsByRule.set(
+      reservation.ruleId,
+      (this.#confirmedExecutionsByRule.get(reservation.ruleId) ?? 0) + 1,
+    );
     const previousExecution = this.#lastExecutionByRule.get(reservation.ruleId);
     if (previousExecution === undefined || confirmedAt > previousExecution) {
       this.#lastExecutionByRule.set(reservation.ruleId, confirmedAt);
@@ -123,6 +138,10 @@ export class BoundedRiskEngine implements RiskEngine {
 
   setKillSwitch(enabled: boolean): void {
     this.#killSwitch = enabled;
+  }
+
+  confirmedExecutions(ruleId: string): number {
+    return this.#confirmedExecutionsByRule.get(ruleId) ?? 0;
   }
 
   #subtractReservation(reservation: Reservation): void {
