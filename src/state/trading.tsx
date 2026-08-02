@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { z } from "zod";
 import type { ConfirmedSwapReceipt } from "../solana/jupiter";
 import type { TokenInformation } from "../solana/market";
@@ -92,7 +92,8 @@ export function deriveTrackedPosition(trades: readonly ConfirmedTradeRecord[]): 
     const allocatedCost = holdings > 0n ? (costBasis * trackedSold) / holdings : 0n;
     holdings = holdings > trackedSold ? holdings - trackedSold : 0n;
     costBasis = costBasis > allocatedCost ? costBasis - allocatedCost : 0n;
-    realized += (solDelta > 0n ? solDelta : 0n) - allocatedCost;
+    const trackedProceeds = solDelta > 0n && sold > 0n ? (solDelta * trackedSold) / sold : 0n;
+    realized += trackedProceeds - allocatedCost;
   }
   const latest = ordered.at(-1)!;
   return Object.freeze({
@@ -120,6 +121,8 @@ const TradingContext = createContext<TradingContextValue | null>(null);
 export function TradingProvider({ children }: { readonly children: ReactNode }) {
   const [trades, setTrades] = useState<readonly ConfirmedTradeRecord[]>(readTrades);
 
+  useEffect(() => persist(trades), [trades]);
+
   const recordConfirmedSwap = useCallback((receipt: ConfirmedSwapReceipt, token: TokenInformation, wallet: string) => {
     const parsed = tradeSchema.safeParse({
       signature: receipt.signature,
@@ -146,11 +149,7 @@ export function TradingProvider({ children }: { readonly children: ReactNode }) 
     }
     Object.freeze(parsed.data.route);
     const record: ConfirmedTradeRecord = Object.freeze(parsed.data);
-    setTrades((current) => {
-      const next = Object.freeze([record, ...current.filter((trade) => trade.signature !== record.signature)].slice(0, 500));
-      persist(next);
-      return next;
-    });
+    setTrades((current) => Object.freeze([record, ...current.filter((trade) => trade.signature !== record.signature)].slice(0, 500)));
     return true;
   }, []);
 

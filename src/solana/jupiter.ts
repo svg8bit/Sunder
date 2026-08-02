@@ -28,7 +28,13 @@ export const JUPITER_SWAP_BUILD_ENDPOINT = "https://api.jup.ag/swap/v2/build";
 export const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
 const COMPUTE_BUDGET_PROGRAM = address("ComputeBudget111111111111111111111111111111");
 const COMPUTE_UNIT_LIMIT_MAX = 1_400_000;
+const PROVIDER_TIMEOUT_MS = 15_000;
 const atomicString = z.string().max(78).regex(/^[0-9]+$/);
+
+function deadlineSignal(signal?: AbortSignal, timeoutMs = PROVIDER_TIMEOUT_MS): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
 
 const apiInstructionSchema = z.object({
   programId: z.string().min(32).max(64),
@@ -99,8 +105,8 @@ export interface JupiterSwapIntent {
 
 export function buildJupiterSwapUrl(intent: JupiterSwapIntent): string {
   if (intent.amountAtomic <= 0n) throw new Error("Swap amount must be positive.");
-  if (!Number.isInteger(intent.slippageBps) || intent.slippageBps < 0 || intent.slippageBps > 5_000) {
-    throw new Error("Slippage must be an integer within [0, 5000] BPS.");
+  if (!Number.isInteger(intent.slippageBps) || intent.slippageBps < 1 || intent.slippageBps > 5_000) {
+    throw new Error("Slippage must be an integer within [1, 5000] BPS.");
   }
   const url = new URL(JUPITER_SWAP_BUILD_ENDPOINT);
   url.searchParams.set("inputMint", intent.direction === "buy" ? WRAPPED_SOL_MINT : intent.tokenMint);
@@ -124,7 +130,7 @@ export async function requestJupiterBuild(
     method: "GET",
     credentials: "omit",
     headers: { accept: "application/json" },
-    signal,
+    signal: deadlineSignal(signal),
   });
   if (!response.ok) {
     let detail = "Quote unavailable.";
@@ -138,6 +144,9 @@ export async function requestJupiterBuild(
   }
   const parsed = buildResponseSchema.safeParse(await response.json());
   if (!parsed.success) throw new Error("Jupiter build returned an invalid transaction manifest.");
+  if (parsed.data.tipInstruction) {
+    throw new Error("Jupiter build returned an unexpected tip instruction; Sunder did not authorize a tip recipient.");
+  }
   if (parsed.data.inputMint === parsed.data.outputMint) throw new Error("Jupiter returned a same-mint route.");
   const expectedInput = intent.direction === "buy" ? WRAPPED_SOL_MINT : intent.tokenMint;
   const expectedOutput = intent.direction === "buy" ? intent.tokenMint : WRAPPED_SOL_MINT;
@@ -207,7 +216,6 @@ function swapInstructions(build: JupiterBuildResponse): readonly Instruction[] {
     toInstruction(build.swapInstruction),
     ...(build.cleanupInstruction ? [toInstruction(build.cleanupInstruction)] : []),
     ...build.otherInstructions.map(toInstruction),
-    ...(build.tipInstruction ? [toInstruction(build.tipInstruction)] : []),
   ]);
 }
 
@@ -239,6 +247,7 @@ export interface PreparedJupiterSwap {
   readonly computeUnitLimit: number;
   readonly computeUnitPriceMicroLamports: bigint;
   readonly estimatedNetworkFeeLamports: bigint;
+  readonly recentBlockhash: string;
   readonly preparedAt: number;
 }
 
@@ -257,23 +266,27 @@ export async function prepareJupiterSwap(input: {
       sigVerify: false,
       replaceRecentBlockhash: false,
     },
-  ).send({ abortSignal: input.signal });
+  ).send({ abortSignal: deadlineSignal(input.signal) });
   if (simulation.value.err) throw new Error(`RPC simulation failed: ${JSON.stringify(simulation.value.err)}`);
   const consumed = Number(simulation.value.unitsConsumed ?? 0n);
   const computeUnitLimit = consumed > 0
     ? Math.min(Math.ceil(consumed * 1.2), COMPUTE_UNIT_LIMIT_MAX)
     : COMPUTE_UNIT_LIMIT_MAX;
-  const transaction = compile(build, address(input.intent.taker), computeUnitLimit);
-  const exactSimulation = await input.client.runtime.rpc.simulateTransaction(
-    getBase64EncodedWireTransaction(transaction),
-    {
-      encoding: "base64",
-      commitment: "confirmed",
-      sigVerify: false,
-      replaceRecentBlockhash: false,
-    },
-  ).send({ abortSignal: input.signal });
-  if (exactSimulation.value.err) throw new Error(`Final RPC simulation failed: ${JSON.stringify(exactSimulation.value.err)}`);
+  const transaction = computeUnitLimit === COMPUTE_UNIT_LIMIT_MAX
+    ? simulationTransaction
+    : compile(build, address(input.intent.taker), computeUnitLimit);
+  if (transaction !== simulationTransaction) {
+    const exactSimulation = await input.client.runtime.rpc.simulateTransaction(
+      getBase64EncodedWireTransaction(transaction),
+      {
+        encoding: "base64",
+        commitment: "confirmed",
+        sigVerify: false,
+        replaceRecentBlockhash: false,
+      },
+    ).send({ abortSignal: deadlineSignal(input.signal) });
+    if (exactSimulation.value.err) throw new Error(`Final RPC simulation failed: ${JSON.stringify(exactSimulation.value.err)}`);
+  }
   const unitPrice = computeUnitPriceMicroLamports(build);
   const estimatedPriority = (BigInt(computeUnitLimit) * unitPrice + 999_999n) / 1_000_000n;
   return Object.freeze({
@@ -283,6 +296,7 @@ export async function prepareJupiterSwap(input: {
     computeUnitLimit,
     computeUnitPriceMicroLamports: unitPrice,
     estimatedNetworkFeeLamports: 5_000n + estimatedPriority,
+    recentBlockhash: blockhash(build).blockhash,
     preparedAt: Date.now(),
   });
 }
@@ -301,7 +315,7 @@ async function rpc<T>(rpcUrl: string, method: string, params: readonly unknown[]
     credentials: "omit",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcSequence, method, params }),
-    signal,
+    signal: deadlineSignal(signal),
   });
   if (!response.ok) throw new Error(`Solana RPC ${method} returned HTTP ${response.status}.`);
   const envelope = await response.json() as RpcEnvelope<T>;
@@ -393,8 +407,11 @@ export function analyzeJupiterSwapReceipt(prepared: PreparedJupiterSwap, signatu
   if (prepared.intent.direction === "buy" && tokenDeltaAtomic < BigInt(prepared.build.otherAmountThreshold)) {
     throw new Error("Confirmed buy token delta is below the quoted minimum output.");
   }
-  if (prepared.intent.direction === "sell" && tokenDeltaAtomic > -prepared.intent.amountAtomic) {
+  if (prepared.intent.direction === "sell" && tokenDeltaAtomic !== -prepared.intent.amountAtomic) {
     throw new Error("Confirmed sell token delta does not match the requested input amount.");
+  }
+  if (prepared.intent.direction === "sell" && walletSolDeltaLamports + networkFeeLamports < BigInt(prepared.build.otherAmountThreshold)) {
+    throw new Error("Confirmed sell SOL proceeds are below the quoted minimum output.");
   }
   const accountRentAndOtherLamports = prepared.intent.direction === "buy"
     ? (-walletSolDeltaLamports - prepared.intent.amountAtomic - networkFeeLamports > 0n
@@ -431,7 +448,7 @@ export async function executePreparedJupiterSwap(input: {
     throw new Error("Connected Wallet Standard account changed after quote preparation.");
   }
   if (!input.wallet.signTransaction) throw new Error("This Wallet Standard provider does not support signTransaction.");
-  const height = await input.client.runtime.rpc.getBlockHeight({ commitment: "confirmed" }).send({ abortSignal: input.signal });
+  const height = await input.client.runtime.rpc.getBlockHeight({ commitment: "confirmed" }).send({ abortSignal: deadlineSignal(input.signal) });
   if (height + 10n >= BigInt(input.prepared.build.blockhashWithMetadata.lastValidBlockHeight)) {
     throw new Error("Quote blockhash is too close to expiry. Refresh the quote before signing.");
   }
@@ -446,20 +463,21 @@ export async function executePreparedJupiterSwap(input: {
     commitment: "confirmed",
     sigVerify: true,
     replaceRecentBlockhash: false,
-  }).send({ abortSignal: input.signal });
+  }).send({ abortSignal: deadlineSignal(input.signal, 25_000) });
   if (signedSimulation.value.err) throw new Error(`Signed transaction simulation failed: ${JSON.stringify(signedSimulation.value.err)}`);
   const signature = String(await input.client.runtime.rpc.sendTransaction(wire, {
     encoding: "base64",
     maxRetries: 2n,
     preflightCommitment: "confirmed",
     skipPreflight: false,
-  }).send({ abortSignal: input.signal }));
+  }).send({ abortSignal: deadlineSignal(input.signal, 25_000) }));
   input.onState?.("submitted", signature);
 
   const startedAt = Date.now();
   let observedProcessed = false;
+  let observedCanonicalStatus = false;
   while (Date.now() - startedAt < 75_000) {
-    const statuses = await input.client.runtime.rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: true }).send({ abortSignal: input.signal });
+    const statuses = await input.client.runtime.rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: true }).send({ abortSignal: deadlineSignal(input.signal) });
     const status = statuses.value[0];
     if (status?.err) throw new Error(`On-chain transaction failed: ${JSON.stringify(status.err)}`);
     if (status && !observedProcessed) {
@@ -467,20 +485,24 @@ export async function executePreparedJupiterSwap(input: {
       input.onState?.("processed", signature);
     }
     if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") {
+      observedCanonicalStatus = true;
       const rpcUrl = String(input.client.config.endpoint);
       const transaction = await rpc<ConfirmedTransactionJson | null>(rpcUrl, "getTransaction", [signature, {
         commitment: "confirmed",
         encoding: "jsonParsed",
         maxSupportedTransactionVersion: 0,
       }], input.signal);
-      if (!transaction) throw new Error("RPC confirmed the signature but did not return transaction evidence.");
-      const receipt = analyzeJupiterSwapReceipt(input.prepared, signature, transaction);
-      input.onState?.("confirmed", signature);
-      return receipt;
+      if (transaction) {
+        const receipt = analyzeJupiterSwapReceipt(input.prepared, signature, transaction);
+        input.onState?.("confirmed", signature);
+        return receipt;
+      }
     }
-    const currentHeight = await input.client.runtime.rpc.getBlockHeight({ commitment: "confirmed" }).send({ abortSignal: input.signal });
-    if (currentHeight > BigInt(input.prepared.build.blockhashWithMetadata.lastValidBlockHeight)) {
-      throw new Error("Transaction blockhash expired before canonical confirmation.");
+    if (!observedCanonicalStatus) {
+      const currentHeight = await input.client.runtime.rpc.getBlockHeight({ commitment: "confirmed" }).send({ abortSignal: deadlineSignal(input.signal) });
+      if (currentHeight > BigInt(input.prepared.build.blockhashWithMetadata.lastValidBlockHeight)) {
+        throw new Error("Transaction blockhash expired before canonical confirmation.");
+      }
     }
     await new Promise<void>((resolve, reject) => {
       const finish = () => {
@@ -497,8 +519,20 @@ export async function executePreparedJupiterSwap(input: {
       else input.signal?.addEventListener("abort", abort, { once: true });
     });
   }
-  throw new Error("Canonical Solana confirmation timed out.");
+  throw new Error(`Canonical Solana confirmation timed out for signature ${signature}.`);
 }
+
+const tokenAccountsByOwnerSchema = z.object({
+  value: z.array(z.object({
+    account: z.object({
+      data: z.object({
+        parsed: z.object({
+          info: z.object({ tokenAmount: z.object({ amount: atomicString }) }),
+        }),
+      }),
+    }),
+  })).max(256),
+});
 
 export async function getWalletTokenBalanceAtomic(input: {
   readonly rpcUrl: string;
@@ -506,11 +540,13 @@ export async function getWalletTokenBalanceAtomic(input: {
   readonly mint: string;
   readonly signal?: AbortSignal;
 }): Promise<bigint> {
-  const result = await rpc<{ readonly value: readonly { readonly account: { readonly data: { readonly parsed: { readonly info: { readonly tokenAmount: { readonly amount: string } } } } } }[] }>(
+  const result = await rpc<unknown>(
     input.rpcUrl,
     "getTokenAccountsByOwner",
     [input.owner, { mint: input.mint }, { encoding: "jsonParsed", commitment: "confirmed" }],
     input.signal,
   );
-  return result.value.reduce((sum, account) => sum + BigInt(account.account.data.parsed.info.tokenAmount.amount), 0n);
+  const parsed = tokenAccountsByOwnerSchema.safeParse(result);
+  if (!parsed.success) throw new Error("Solana RPC returned an invalid token-account balance payload.");
+  return parsed.data.value.reduce((sum, account) => sum + BigInt(account.account.data.parsed.info.tokenAmount.amount), 0n);
 }

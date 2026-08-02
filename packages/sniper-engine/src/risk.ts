@@ -15,6 +15,13 @@ interface SpendWindow {
   atomic: bigint;
 }
 
+export interface BoundedRiskHydration {
+  readonly confirmedExecutionsByRule?: Readonly<Record<string, number>>;
+  readonly lastExecutionByRule?: Readonly<Record<string, number>>;
+  readonly dailySpendByRule?: Readonly<Record<string, SpendWindow>>;
+  readonly dailySpendByNetwork?: Readonly<Partial<Record<ChainNetworkId, SpendWindow>>>;
+}
+
 interface Reservation {
   readonly id: string;
   readonly ruleId: string;
@@ -36,14 +43,17 @@ export class BoundedRiskEngine implements RiskEngine {
   readonly #dailySpendByNetwork = new Map<ChainNetworkId, SpendWindow>();
   readonly #confirmedExecutionsByRule = new Map<string, number>();
   readonly #reservations = new Map<string, Reservation>();
+  readonly #reservedByRule = new Map<string, number>();
   #reservationSequence = 0;
 
   constructor(options: {
     readonly unlockedProductionNetworks?: readonly SniperEvent["network"][];
     readonly networkDailyLimits?: Readonly<Partial<Record<ChainNetworkId, bigint>>>;
+    readonly hydration?: BoundedRiskHydration;
   } = {}) {
     this.#unlockedProductionNetworks = new Set(options.unlockedProductionNetworks ?? []);
     this.#networkDailyLimits = Object.freeze({ ...options.networkDailyLimits });
+    this.#hydrate(options.hydration);
   }
 
   assertEvent(event: SniperEvent, rule: SniperRule, spendAtomic: bigint, now = Date.now()): string {
@@ -60,7 +70,7 @@ export class BoundedRiskEngine implements RiskEngine {
         throw new RiskViolation("invalid-confirmed-execution-limit", "maxConfirmedExecutions must be an integer within [1, 3].");
       }
       const confirmed = this.#confirmedExecutionsByRule.get(rule.id) ?? 0;
-      const reserved = [...this.#reservations.values()].filter((reservation) => reservation.ruleId === rule.id).length;
+      const reserved = this.#reservedByRule.get(rule.id) ?? 0;
       if (confirmed + reserved >= rule.maxConfirmedExecutions) {
         throw new RiskViolation("confirmed-execution-limit", "The armed rule reached its canonical confirmation limit.");
       }
@@ -92,6 +102,7 @@ export class BoundedRiskEngine implements RiskEngine {
       day,
       spendAtomic,
     });
+    this.#reservedByRule.set(rule.id, (this.#reservedByRule.get(rule.id) ?? 0) + 1);
     return reservationId;
   }
 
@@ -119,6 +130,7 @@ export class BoundedRiskEngine implements RiskEngine {
     const reservation = this.#reservations.get(reservationId);
     if (!reservation) throw new RiskViolation("unknown-reservation", "Risk reservation is missing or already settled.");
     this.#reservations.delete(reservationId);
+    this.#decrementReserved(reservation.ruleId);
     this.#confirmedExecutionsByRule.set(
       reservation.ruleId,
       (this.#confirmedExecutionsByRule.get(reservation.ruleId) ?? 0) + 1,
@@ -133,6 +145,7 @@ export class BoundedRiskEngine implements RiskEngine {
     const reservation = this.#reservations.get(reservationId);
     if (!reservation) return;
     this.#reservations.delete(reservationId);
+    this.#decrementReserved(reservation.ruleId);
     this.#subtractReservation(reservation);
   }
 
@@ -142,6 +155,55 @@ export class BoundedRiskEngine implements RiskEngine {
 
   confirmedExecutions(ruleId: string): number {
     return this.#confirmedExecutionsByRule.get(ruleId) ?? 0;
+  }
+
+  snapshot(): BoundedRiskHydration {
+    return Object.freeze({
+      confirmedExecutionsByRule: Object.freeze(Object.fromEntries(this.#confirmedExecutionsByRule)),
+      lastExecutionByRule: Object.freeze(Object.fromEntries(this.#lastExecutionByRule)),
+      dailySpendByRule: Object.freeze(Object.fromEntries([...this.#dailySpendByRule].map(([key, value]) => [key, Object.freeze({ ...value })]))),
+      dailySpendByNetwork: Object.freeze(Object.fromEntries([...this.#dailySpendByNetwork].map(([key, value]) => [key, Object.freeze({ ...value })]))),
+    });
+  }
+
+  #hydrate(hydration: BoundedRiskHydration | undefined): void {
+    if (!hydration) return;
+    for (const [ruleId, count] of Object.entries(hydration.confirmedExecutionsByRule ?? {})) {
+      if (!ruleId.trim() || !Number.isInteger(count) || count < 0) throw new Error("Invalid confirmed-execution risk hydration.");
+      this.#confirmedExecutionsByRule.set(ruleId, count);
+    }
+    for (const [ruleId, timestamp] of Object.entries(hydration.lastExecutionByRule ?? {})) {
+      if (!ruleId.trim() || !Number.isFinite(timestamp) || timestamp < 0) throw new Error("Invalid last-execution risk hydration.");
+      this.#lastExecutionByRule.set(ruleId, timestamp);
+    }
+    for (const [ruleId, window] of Object.entries(hydration.dailySpendByRule ?? {})) {
+      this.#dailySpendByRule.set(ruleId, this.#validatedWindow(ruleId, window));
+    }
+    for (const [network, window] of Object.entries(hydration.dailySpendByNetwork ?? {})) {
+      if (!(network in this.#networkDailyLimits) && !["solana:devnet", "solana:mainnet", "evm:sepolia", "evm:mainnet"].includes(network)) {
+        throw new Error("Invalid network risk hydration.");
+      }
+      this.#dailySpendByNetwork.set(network as ChainNetworkId, this.#validatedWindow(network, window));
+    }
+  }
+
+  #validatedWindow(key: string, value: SpendWindow): SpendWindow {
+    const parsedDay = /^\d{4}-\d{2}-\d{2}$/.test(value.day)
+      ? new Date(`${value.day}T00:00:00.000Z`)
+      : undefined;
+    const validDay = parsedDay !== undefined
+      && Number.isFinite(parsedDay.getTime())
+      && parsedDay.toISOString().slice(0, 10) === value.day;
+    if (!key.trim() || !validDay || typeof value.atomic !== "bigint" || value.atomic < 0n) {
+      throw new Error("Invalid daily-spend risk hydration.");
+    }
+    return Object.freeze({ day: value.day, atomic: value.atomic });
+  }
+
+  #decrementReserved(ruleId: string): void {
+    const remaining = (this.#reservedByRule.get(ruleId) ?? 0) - 1;
+    if (remaining > 0) this.#reservedByRule.set(ruleId, remaining);
+    else this.#reservedByRule.delete(ruleId);
   }
 
   #subtractReservation(reservation: Reservation): void {

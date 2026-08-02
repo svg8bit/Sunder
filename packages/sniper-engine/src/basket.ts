@@ -63,6 +63,17 @@ export function planWalletBasket(input: {
   }
 
   input.members.forEach(assertMember);
+  const memberIds = new Set<string>();
+  const memberAddresses = new Set<string>();
+  for (const member of input.members) {
+    const id = member.id.trim();
+    const address = member.address.trim();
+    const canonicalAddress = address.startsWith("0x") ? address.toLowerCase() : address;
+    if (memberIds.has(id)) throw new Error(`Wallet basket contains duplicate member id: ${id}.`);
+    if (memberAddresses.has(canonicalAddress)) throw new Error(`Wallet basket contains duplicate address: ${address}.`);
+    memberIds.add(id);
+    memberAddresses.add(canonicalAddress);
+  }
   const exclusions: WalletBasketExclusion[] = [];
   const executable: WalletBasketMember[] = [];
   for (const member of input.members) {

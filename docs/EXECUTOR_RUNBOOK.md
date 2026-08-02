@@ -10,6 +10,7 @@ The executor is a separate, loopback-only Node.js process. It builds, simulates,
 - State-changing endpoints require a bearer token read from a non-world-accessible file. The token is not an environment variable.
 - Provider acceptance is only `submitted`. The executor reports success only after Solana confirmation or a canonical EVM receipt at the required depth.
 - Account queues are serialized per network and public funding address to prevent accidental nonce collisions.
+- On startup, canonical confirmations in the append-only audit hydrate per-rule confirmation caps, cooldowns, and per-rule/per-network daily spend. Keep the audit file durable and instance-scoped; deleting or replacing it invalidates those safety counters and requires an operator review before execution resumes.
 
 ## Build and install
 

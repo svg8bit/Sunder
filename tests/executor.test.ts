@@ -73,6 +73,23 @@ describe("executor configuration and readiness", () => {
     expect(Object.isFrozen(nested.items)).toBe(true);
   });
 
+  it("rebuilds canonical risk counters and spend windows from the append-only audit after restart", async () => {
+    const paths = await fixture();
+    const timestamp = Date.UTC(2026, 7, 2, 12, 0, 0);
+    const audit = new JsonlAuditSink(paths.auditPath);
+    await audit.record({ id: "rule", executionId: "execution-1", eventId: "event-1", network: "evm:sepolia", stage: "rule", state: "matched", timestamp, detail: { ruleId: "rule-1" } });
+    await audit.record({ id: "risk", executionId: "execution-1", eventId: "event-1", network: "evm:sepolia", stage: "risk", state: "passed", timestamp: timestamp + 1, detail: { phase: "event", spendAtomic: 25_000n } });
+    await audit.record({ id: "confirmation", executionId: "execution-1", eventId: "event-1", network: "evm:sepolia", stage: "confirmation", state: "confirmed", timestamp: timestamp + 2, detail: { signature: `0x${"a".repeat(64)}` } });
+
+    const restarted = new JsonlAuditSink(paths.auditPath);
+    await restarted.initialize();
+    const hydration = restarted.riskHydration();
+    expect(hydration.confirmedExecutionsByRule).toMatchObject({ "rule-1": 1 });
+    expect(hydration.dailySpendByRule?.["rule-1"]).toEqual({ day: "2026-08-02", atomic: 25_000n });
+    expect(hydration.dailySpendByNetwork?.["evm:sepolia"]).toEqual({ day: "2026-08-02", atomic: 25_000n });
+    expect(new BoundedRiskEngine({ hydration }).confirmedExecutions("rule-1")).toBe(1);
+  });
+
   it("rejects key material and public control-plane binding", () => {
     expect(() => parseExecutorConfig({ SUNDER_PRIVATE_KEY: "forbidden" })).toThrow(/Forbidden key-material/);
     expect(() => parseExecutorConfig({ SUNDER_EXECUTOR_HOST: "0.0.0.0" })).toThrow(/loopback/);

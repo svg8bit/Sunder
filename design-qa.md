@@ -43,13 +43,13 @@ There are no remaining actionable P0, P1, or P2 findings.
 - Stable live state: the same selected instrument remained selected across more than two rolling `/recent` refreshes and the tape accumulated 80 confirmed Pump events.
 - Viewport resilience: desktop `scrollWidth = clientWidth = 1280`; mobile `scrollWidth = clientWidth = 390`. The mobile workspace and trade dock meet at the same boundary without overlap.
 - Browser page errors: none. Final fresh production-render console messages: none.
-- Local production-build vitals after reserving the token strip: TTFB `1 ms`, FCP `176 ms`, LCP `480 ms`, CLS `0.0`. These are VPS-local QA measurements, not an internet SLA.
+- Local production-build vitals after reserving the token strip: TTFB `0.7 ms`, FCP `132 ms`, LCP `468 ms`, CLS `0.0`. These are VPS-local QA measurements, not an internet SLA.
 
 ## Comparison history
 
 ### Pass 1 — blocked
 
-- [P1] The terminal heading/topbar consumed too much of the `1280 x 653` viewport and pushed the core trading controls below the fold.
+- [P1] The terminal heading/top bar consumed too much of the `1280 x 653` viewport and pushed the core trading controls below the fold.
 - [P1] No token remained selected during the rolling recent-token refresh, leaving the primary market state empty.
 - [P2] The first mobile render overflowed horizontally (`534 px` content in a `390 px` viewport).
 - Evidence: `artifacts/qa/terminal-desktop-pass1.png`, `artifacts/qa/terminal-desktop-side-by-side-pass1.png`, and `artifacts/qa/terminal-mobile-pass1.png`.

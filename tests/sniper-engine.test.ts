@@ -330,6 +330,32 @@ describe("SniperEngine confirmation invariant", () => {
     expect(risk.confirmedExecutions(burstRule.id)).toBe(3);
     expect(() => risk.assertEvent(request(network).event, burstRule, 10_000n, 3_000)).toThrow(/canonical confirmation limit/);
   });
+
+  it("hydrates canonical counts, cooldowns and daily envelopes after a process restart", () => {
+    const network = "solana:devnet";
+    const day = "2026-08-02";
+    const at = Date.UTC(2026, 7, 2, 10, 0, 0);
+    const risk = new BoundedRiskEngine({
+      hydration: {
+        confirmedExecutionsByRule: { "rule-1": 3 },
+        lastExecutionByRule: { "rule-1": at },
+        dailySpendByRule: { "rule-1": { day, atomic: 30_000n } },
+        dailySpendByNetwork: { [network]: { day, atomic: 30_000n } },
+      },
+      networkDailyLimits: { [network]: 30_000n },
+    });
+    expect(risk.confirmedExecutions("rule-1")).toBe(3);
+    expect(risk.snapshot().dailySpendByNetwork?.[network]?.atomic).toBe(30_000n);
+    expect(() => risk.assertEvent(request(network).event, rule(network, { maxConfirmedExecutions: 3 }), 1n, at + 1)).toThrow(/canonical confirmation limit/);
+    expect(() => risk.assertEvent(request(network).event, rule(network, { id: "rule-2" }), 1n, at + 1)).toThrow(/network daily limit/);
+  });
+
+  it("rejects impossible UTC dates in hydrated spend windows", () => {
+    for (const day of ["2026-13-01", "2026-02-30"]) {
+      expect(() => new BoundedRiskEngine({ hydration: { dailySpendByRule: { "rule-1": { day, atomic: 1n } } } })).toThrow(/Invalid daily-spend risk hydration/);
+    }
+    expect(() => new BoundedRiskEngine({ hydration: { dailySpendByRule: { "rule-1": { day: "2026-02-28", atomic: 1n } } } })).not.toThrow();
+  });
 });
 
 describe("wallet basket planning", () => {
@@ -376,6 +402,12 @@ describe("wallet basket planning", () => {
       ],
     });
     expect(plan.steps.map((step) => step.amountAtomic)).toEqual([1n, 1n]);
+  });
+
+  it("rejects duplicate member ids and addresses before planning", () => {
+    const member = { id: "one", label: "One", address: "wallet-one", capability: "wallet-standard" as const, enabled: true, weightBps: 5_000 };
+    expect(() => planWalletBasket({ totalAtomic: 10n, members: [member, { ...member, address: "wallet-two" }] })).toThrow(/duplicate member id/);
+    expect(() => planWalletBasket({ totalAtomic: 10n, members: [member, { ...member, id: "two" }] })).toThrow(/duplicate address/);
   });
 });
 

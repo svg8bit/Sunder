@@ -144,7 +144,7 @@ export function WalletControl() {
           </div>
         )}
         <div className="modal-footnote">
-          <Badge tone={chain.production ? "accent" : "good"}>{chain.production ? "Interactive Mainnet" : "Test network"}</Badge>
+          <Badge tone={chain.production ? "warn" : "good"}>{chain.production ? "Interactive Mainnet" : "Test network"}</Badge>
           {chain.production
             ? "Manual trades can request an in-wallet signature after simulation. Persistent automation remains readiness-locked."
             : "Verification sends a tiny self-transaction and reports success only after RPC confirmation."}

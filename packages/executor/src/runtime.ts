@@ -91,8 +91,10 @@ export async function createExecutorRuntime(config: ExecutorConfig, readiness: E
     .filter((network) => network.production && network.ready)
     .map((network) => network.network);
   const audit = new JsonlAuditSink(config.auditFile);
+  await audit.initialize();
   const risk = new BoundedRiskEngine({
     unlockedProductionNetworks,
+    hydration: audit.riskHydration(),
     networkDailyLimits: {
       "solana:mainnet": config.mainnetMaxDailySpendAtomic["solana:mainnet"],
       "evm:mainnet": config.mainnetMaxDailySpendAtomic["evm:mainnet"],

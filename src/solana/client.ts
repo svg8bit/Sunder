@@ -1,6 +1,9 @@
 import { autoDiscover, createClient } from "@solana/client";
 import type { ChainNetworkId } from "../../packages/sniper-engine/src/index";
 
+export const SOLANA_MAINNET_RPC_URL = import.meta.env.VITE_SOLANA_MAINNET_RPC_URL?.trim() || "https://solana-rpc.publicnode.com";
+export const SOLANA_MAINNET_WS_URL = import.meta.env.VITE_SOLANA_MAINNET_WS_URL?.trim() || "wss://solana-rpc.publicnode.com";
+
 function client(endpoint: string, websocketEndpoint: string) {
   return createClient({
     endpoint,
@@ -19,8 +22,8 @@ let mainnetClient: ReturnType<typeof client> | undefined;
 export function solanaClientFor(network: ChainNetworkId) {
   if (network !== "solana:mainnet") return devnetClient;
   mainnetClient ??= client(
-    import.meta.env.VITE_SOLANA_MAINNET_RPC_URL?.trim() || "https://solana-rpc.publicnode.com",
-    import.meta.env.VITE_SOLANA_MAINNET_WS_URL?.trim() || "wss://solana-rpc.publicnode.com",
+    SOLANA_MAINNET_RPC_URL,
+    SOLANA_MAINNET_WS_URL,
   );
   return mainnetClient;
 }

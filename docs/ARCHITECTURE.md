@@ -33,6 +33,7 @@ Relay acceptance is recorded as `submitted`. Only Solana `confirmed`/`finalized`
 - safe bounded regular expressions and truncated event text;
 - target allow/deny lists, media/account/keyword matching and cooldowns;
 - per-rule and per-network daily spend envelopes;
+- startup hydration of canonical confirmation caps, cooldowns and daily spend from the append-only executor audit, so a process restart cannot reset an armed rule's first-three boundary;
 - quote expiry, slippage and price-impact checks;
 - default Mainnet locks and a live kill switch;
 - bounded retries with Solana refresh or EVM nonce-preserving replacement;
@@ -49,7 +50,7 @@ The Solana Mainnet trading terminal is a separate interactive, wallet-owned path
 - Jupiter Tokens V2 `recent`/`search` supplies real new-pool discovery and bounded market metadata; malformed individual records are discarded without fabricating replacements.
 - A confirmed `logsSubscribe` on the official Pump program address decodes the current official `TradeEvent` discriminator/prefix and filters the selected mint. This powers the live tape and exposes actual protocol/creator fee basis points. A live PublicNode A/B probe observed `98` matching program-stream events but `0` notifications when the `mentions` filter was changed to the event mint, because that mint is not reliably present in the outer transaction account list; the program subscription plus decoded-mint filter is therefore intentional.
 - Jupiter Swap V2 `build` is requested with wrapped SOL, the selected mint, an exact amount, the connected taker and `platformFeeBps=0`.
-- API instructions and lookup tables are validated with Zod, converted to a versioned transaction, simulated without a signature to size compute units, rebuilt, then simulated again.
+- API instructions and lookup tables are validated with Zod, converted to a versioned transaction, and simulated without a signature to size compute units. A reduced compute limit is rebuilt and simulated exactly; if the maximum limit remains unchanged, the already-exact first simulation is reused.
 - Wallet Standard signs the exact prepared transaction. Sunder runs signed simulation, submits with preflight, polls signature status and blockhash expiry, fetches `getTransaction`, validates the expected wallet/mint and derives exact SOL/token/fee/rent deltas.
 - Local PnL includes only those canonical confirmed deltas. Unvalued inventory never appears as realized profit. The first-three cap is enforced by the shared risk core and wallet-basket planner; watch-only addresses cannot become signers.
 

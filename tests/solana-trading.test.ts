@@ -62,6 +62,7 @@ function prepared(direction: "buy" | "sell" = "buy"): PreparedJupiterSwap {
     computeUnitLimit: 200_000,
     computeUnitPriceMicroLamports: 5_000n,
     estimatedNetworkFeeLamports: 6_000n,
+    recentBlockhash: "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4zLSyd7X1",
     preparedAt: 1,
   };
 }
@@ -115,16 +116,24 @@ describe("Jupiter direct execution boundary", () => {
     expect(url.searchParams.get("wrapAndUnwrapSol")).toBe("true");
     expect(url.searchParams.get("computeUnitPricePercentile")).toBe("veryHigh");
     expect(url.searchParams.get("mode")).toBe("fast");
+    const sell = new URL(buildJupiterSwapUrl({ direction: "sell", tokenMint, amountAtomic: 1_000_000n, taker: wallet, slippageBps: 75, priorityProfile: "medium", fastMode: false }));
+    expect(sell.searchParams.get("inputMint")).toBe(tokenMint);
+    expect(sell.searchParams.get("outputMint")).toBe(WRAPPED_SOL_MINT);
+    expect(() => buildJupiterSwapUrl({ direction: "buy", tokenMint, amountAtomic: 1n, taker: wallet, slippageBps: 0, priorityProfile: "medium", fastMode: false })).toThrow(/\[1, 5000\]/);
   });
 
   it("validates provider manifests and rejects malformed responses", async () => {
-    const goodFetch = vi.fn(async () => new Response(JSON.stringify(buildManifest()), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const goodFetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(buildManifest()), { status: 200, headers: { "content-type": "application/json" } }));
+    const goodFetch = goodFetchMock as unknown as typeof fetch;
     const result = await requestJupiterBuild({ direction: "buy", tokenMint, amountAtomic: 100_000_000n, taker: wallet, slippageBps: 100, priorityProfile: "high", fastMode: false }, undefined, goodFetch);
     expect(result.routePlan[0]?.swapInfo.label).toBe("Pump.fun");
     const badFetch = vi.fn(async () => new Response(JSON.stringify({ outAmount: "500" }), { status: 200 })) as unknown as typeof fetch;
     await expect(requestJupiterBuild({ direction: "buy", tokenMint, amountAtomic: 100n, taker: wallet, slippageBps: 100, priorityProfile: "high", fastMode: false }, undefined, badFetch)).rejects.toThrow(/invalid transaction manifest/);
     const mismatchedFetch = vi.fn(async () => new Response(JSON.stringify({ ...buildManifest(), inAmount: "999" }), { status: 200 })) as unknown as typeof fetch;
     await expect(requestJupiterBuild({ direction: "buy", tokenMint, amountAtomic: 100_000_000n, taker: wallet, slippageBps: 100, priorityProfile: "high", fastMode: false }, undefined, mismatchedFetch)).rejects.toThrow(/does not match the requested swap intent/);
+    const tippedFetch = vi.fn(async () => new Response(JSON.stringify({ ...buildManifest(), tipInstruction: { programId: program, accounts: [], data: "AQ==" } }), { status: 200 })) as unknown as typeof fetch;
+    await expect(requestJupiterBuild({ direction: "buy", tokenMint, amountAtomic: 100_000_000n, taker: wallet, slippageBps: 100, priorityProfile: "high", fastMode: false }, undefined, tippedFetch)).rejects.toThrow(/unexpected tip instruction/);
+    expect(goodFetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("derives exact wallet deltas only from confirmed transaction metadata", () => {
@@ -174,6 +183,32 @@ describe("Jupiter direct execution boundary", () => {
         preTokenBalances: [],
         postTokenBalances: [{ accountIndex: 1, mint: tokenMint, owner: wallet, uiTokenAmount: { amount: "494999999", decimals: 6 } }],
       },
+    })).toThrow(/below the quoted minimum/);
+  });
+
+  it("accepts only an exact sell debit and verifies minimum SOL proceeds net of the network fee", () => {
+    const evidence = {
+      slot: 44,
+      blockTime: null,
+      transaction: { message: { accountKeys: [wallet, program] } },
+      meta: {
+        err: null,
+        fee: 5_000,
+        preBalances: [1_000_000_000, 0],
+        postBalances: [1_499_995_000, 0],
+        logMessages: [],
+        preTokenBalances: [{ accountIndex: 1, mint: tokenMint, owner: wallet, uiTokenAmount: { amount: "200000000", decimals: 6 } }],
+        postTokenBalances: [{ accountIndex: 1, mint: tokenMint, owner: wallet, uiTokenAmount: { amount: "100000000", decimals: 6 } }],
+      },
+    };
+    expect(analyzeJupiterSwapReceipt(prepared("sell"), "x".repeat(88), evidence)).toMatchObject({ tokenDeltaAtomic: -100_000_000n, walletSolDeltaLamports: 499_995_000n });
+    expect(() => analyzeJupiterSwapReceipt(prepared("sell"), "x".repeat(88), {
+      ...evidence,
+      meta: { ...evidence.meta, postTokenBalances: [{ ...evidence.meta.postTokenBalances[0]!, uiTokenAmount: { amount: "99999999", decimals: 6 } }] },
+    })).toThrow(/does not match the requested input/);
+    expect(() => analyzeJupiterSwapReceipt(prepared("sell"), "x".repeat(88), {
+      ...evidence,
+      meta: { ...evidence.meta, postBalances: [1_494_994_999, 0] },
     })).toThrow(/below the quoted minimum/);
   });
 });
@@ -258,7 +293,16 @@ describe("confirmed net PnL ledger", () => {
   it("marks sold inventory that was not bought in the local confirmed ledger", () => {
     const position = deriveTrackedPosition([trade({ direction: "sell", tokenDeltaAtomic: "-1000000", walletSolDeltaLamports: "50000000" })]);
     expect(position?.hasUntrackedInventory).toBe(true);
-    expect(position?.realizedNetPnlLamports).toBe(50_000_000n);
+    expect(position?.realizedNetPnlLamports).toBe(0n);
+  });
+
+  it("prorates proceeds when a sell mixes tracked and untracked inventory", () => {
+    const position = deriveTrackedPosition([
+      trade({ signature: "a".repeat(88), tokenDeltaAtomic: "500000", walletSolDeltaLamports: "-50000000" }),
+      trade({ signature: "b".repeat(88), slot: 2, confirmedAt: 2, direction: "sell", tokenDeltaAtomic: "-1000000", walletSolDeltaLamports: "120000000" }),
+    ]);
+    expect(position?.hasUntrackedInventory).toBe(true);
+    expect(position?.realizedNetPnlLamports).toBe(10_000_000n);
   });
 
   it("orders same-time records by canonical slot and drops only invalid stored entries", () => {

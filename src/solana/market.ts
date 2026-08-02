@@ -115,7 +115,7 @@ function integer(value: unknown, field: string): bigint {
   if (typeof value === "bigint") return value;
   if (typeof value === "number" && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === "string" && /^-?[0-9]+$/.test(value)) return BigInt(value);
-  if (value && typeof value === "object" && "toString" in value) {
+  if (value && typeof value === "object" && "toString" in value && typeof value.toString === "function") {
     const result = String((value as { toString(): string }).toString());
     if (/^-?[0-9]+$/.test(result)) return BigInt(result);
   }
@@ -124,7 +124,7 @@ function integer(value: unknown, field: string): bigint {
 
 function publicKey(value: unknown, field: string): string {
   if (typeof value === "string" && value.length >= 32) return value;
-  if (value && typeof value === "object" && "toBase58" in value) {
+  if (value && typeof value === "object" && "toBase58" in value && typeof value.toBase58 === "function") {
     const result = String((value as { toBase58(): string }).toBase58());
     if (result.length >= 32) return result;
   }
@@ -213,17 +213,19 @@ export function decodePumpTradeLog(
   return normalizePumpTradeEvent({ mint, solAmount, tokenAmount, isBuy, user, timestamp, feeBasisPoints, fee, creatorFeeBasisPoints, creatorFee }, context);
 }
 
-interface LogsNotification {
-  readonly jsonrpc: "2.0";
-  readonly method: "logsNotification";
-  readonly params: {
-    readonly result: {
-      readonly context: { readonly slot: number };
-      readonly value: { readonly signature: string; readonly err: unknown; readonly logs: readonly string[] };
-    };
-    readonly subscription: number;
-  };
-}
+const logsNotificationSchema = z.object({
+  method: z.literal("logsNotification"),
+  params: z.object({
+    result: z.object({
+      context: z.object({ slot: z.number().int().nonnegative() }),
+      value: z.object({
+        signature: z.string().min(64).max(128),
+        err: z.unknown().optional(),
+        logs: z.array(z.string().max(16_384)).max(4_096),
+      }),
+    }),
+  }),
+});
 
 export async function subscribePumpTrades(input: {
   readonly mint: string;
@@ -236,6 +238,13 @@ export async function subscribePumpTrades(input: {
   const requestId = Math.floor(Math.random() * 1_000_000_000) + 1;
   let subscriptionId: number | undefined;
   let intentionalClose = false;
+  let disconnectReported = false;
+  const reportDisconnect = () => {
+    if (!intentionalClose && !disconnectReported) {
+      disconnectReported = true;
+      input.onDisconnect?.();
+    }
+  };
   await new Promise<void>((resolve, reject) => {
     let settled = false;
     const timeout = setTimeout(() => {
@@ -274,9 +283,9 @@ export async function subscribePumpTrades(input: {
         }
         return;
       }
-      const notification = payload as Partial<LogsNotification>;
-      if (notification.method !== "logsNotification" || !notification.params?.result) return;
-      const { context, value } = notification.params.result;
+      const notification = logsNotificationSchema.safeParse(payload);
+      if (!notification.success) return;
+      const { context, value } = notification.data.params.result;
       if (value.err) return;
       for (const log of value.logs) {
         try {
@@ -292,14 +301,14 @@ export async function subscribePumpTrades(input: {
         settled = true;
         clearTimeout(timeout);
         reject(new Error("Pump logs WebSocket connection failed."));
-      } else if (!intentionalClose) input.onDisconnect?.();
+      } else reportDisconnect();
     };
     socket.onclose = () => {
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
         reject(new Error("Pump logs WebSocket closed before subscribing."));
-      } else if (!intentionalClose) input.onDisconnect?.();
+      } else reportDisconnect();
     };
   });
   return async () => {

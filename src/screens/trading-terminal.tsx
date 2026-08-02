@@ -17,11 +17,12 @@ import {
   Wifi,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { planWalletBasket } from "../../packages/sniper-engine/src/index";
 import { Badge, Button, EmptyState, Field, Input, Panel, Segmented, Select, Toggle } from "../components/ui";
 import { applyPercentageBps, formatAtomicAmount, parseDecimalAmount } from "../solana/amounts";
+import { SOLANA_MAINNET_RPC_URL } from "../solana/client";
 import {
   executePreparedJupiterSwap,
   getWalletTokenBalanceAtomic,
@@ -41,8 +42,6 @@ type FeedFilter = "new" | "moving" | "liquid" | "pump";
 type TradeDirection = "buy" | "sell";
 type QuotePhase = "idle" | "quoting" | "ready" | "awaiting-signature" | "signed" | "submitted" | "processed" | "confirmed" | "failed";
 type PricePoint = { readonly at: number; readonly price: number };
-
-const SOLANA_MAINNET_RPC = import.meta.env.VITE_SOLANA_MAINNET_RPC_URL?.trim() || "https://solana-rpc.publicnode.com";
 
 function shorten(value: string, left = 5, right = 4): string {
   return value.length <= left + right + 1 ? value : `${value.slice(0, left)}…${value.slice(-right)}`;
@@ -204,10 +203,10 @@ function MarketChart({ points, trades, symbol }: { readonly points: readonly Pri
   );
 }
 
-function TokenFeedRow({ token, active, onSelect }: { readonly token: TokenInformation; readonly active: boolean; readonly onSelect: () => void }) {
+function TokenFeedRow({ token, active, disabled, onSelect }: { readonly token: TokenInformation; readonly active: boolean; readonly disabled?: boolean; readonly onSelect: () => void }) {
   const change = token.stats5m?.priceChange;
   return (
-    <button type="button" className={`terminal-token-row${active ? " is-active" : ""}`} onClick={onSelect} aria-pressed={active}>
+    <button type="button" className={`terminal-token-row${active ? " is-active" : ""}`} disabled={disabled} onClick={onSelect} aria-pressed={active}>
       {tokenImage(token, "terminal-token-row__icon")}
       <span className="terminal-token-row__identity"><strong>{token.symbol}</strong><small>{token.name}</small></span>
       <span><strong>{formatUsd(token.usdPrice)}</strong><small>{tokenAge(token)}</small></span>
@@ -283,6 +282,15 @@ export function TradingTerminalScreen() {
   const quoteAbort = useRef<AbortController | undefined>(undefined);
   const executing = useRef(false);
 
+  const invalidateQuote = useCallback(() => {
+    quoteAbort.current?.abort();
+    quoteAbort.current = undefined;
+    setPrepared(undefined);
+    setReceipt(undefined);
+    setPhase("idle");
+    setError(undefined);
+  }, []);
+
   const tokens = useMemo(() => {
     // Keep the selected instrument stable when it ages out of the rolling
     // `/recent` window. Current provider data still wins while it is present.
@@ -301,6 +309,14 @@ export function TradingTerminalScreen() {
   }, [pinnedToken, selected]);
 
   useEffect(() => {
+    const activeMints = new Set(tokens.map((token) => token.id));
+    setObservations((current) => {
+      const retained = Object.entries(current).filter(([mint]) => activeMints.has(mint));
+      return retained.length === Object.keys(current).length ? current : Object.freeze(Object.fromEntries(retained));
+    });
+  }, [tokens]);
+
+  useEffect(() => {
     if (!selected?.usdPrice || !Number.isFinite(selected.usdPrice)) return;
     const at = selected.updatedAt ? Date.parse(selected.updatedAt) : Date.now();
     const timestamp = Number.isFinite(at) ? at : Date.now();
@@ -313,12 +329,8 @@ export function TradingTerminalScreen() {
   }, [selected]);
 
   useEffect(() => {
-    quoteAbort.current?.abort();
-    setPrepared(undefined);
-    setReceipt(undefined);
-    setPhase("idle");
-    setError(undefined);
-  }, [direction, selectedMint]);
+    invalidateQuote();
+  }, [direction, invalidateQuote, selectedMint]);
 
   useEffect(() => () => quoteAbort.current?.abort(), []);
 
@@ -354,7 +366,7 @@ export function TradingTerminalScreen() {
 
   const submitSearch = async (event: FormEvent) => {
     event.preventDefault();
-    if (!search.trim()) return;
+    if (!search.trim() || searching) return;
     setSearching(true);
     try {
       const results = await searchTokenInformation(search);
@@ -381,7 +393,7 @@ export function TradingTerminalScreen() {
     try {
       const amountAtomic = direction === "buy"
         ? parseDecimalAmount(amount, 9)
-        : applyPercentageBps(await getWalletTokenBalanceAtomic({ rpcUrl: SOLANA_MAINNET_RPC, owner: walletAddress, mint: selected.id, signal: controller.signal }), sellPercentage);
+        : applyPercentageBps(await getWalletTokenBalanceAtomic({ rpcUrl: SOLANA_MAINNET_RPC_URL, owner: walletAddress, mint: selected.id, signal: controller.signal }), sellPercentage);
       const next = await prepareJupiterSwap({
         client,
         signal: controller.signal,
@@ -407,6 +419,8 @@ export function TradingTerminalScreen() {
       setPhase("failed");
       workspace.record({ category: "simulation", action: "Direct swap preparation failed", detail, state: "failed", network });
       toast.error(detail);
+    } finally {
+      if (quoteAbort.current === controller) quoteAbort.current = undefined;
     }
   };
 
@@ -462,6 +476,7 @@ export function TradingTerminalScreen() {
     : undefined;
   const quoteInputLamports = prepared && direction === "buy" ? prepared.intent.amountAtomic : 0n;
   const referenceVenueFee = quoteInputLamports / 100n;
+  const settling = ["awaiting-signature", "signed", "submitted", "processed"].includes(phase);
   const busy = ["quoting", "awaiting-signature", "signed", "submitted", "processed"].includes(phase);
 
   return (
@@ -491,11 +506,11 @@ export function TradingTerminalScreen() {
       <div className="terminal-workspace">
         <aside className="terminal-feed">
           <header><div><strong>Pulse</strong><Badge tone="accent">New pools</Badge></div><button type="button" className="icon-button" onClick={() => void recent.refetch()} disabled={recent.isFetching} aria-label="Refresh new tokens"><RefreshCw className={recent.isFetching ? "spin" : ""} size={15} /></button></header>
-          <form className="terminal-search" onSubmit={(event) => void submitSearch(event)}><Search size={14} /><Input aria-label="Search token or paste mint" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Token or mint" /><button type="submit" disabled={searching} aria-label="Search Jupiter tokens">{searching ? <LoaderCircle className="spin" size={14} /> : "↵"}</button></form>
+          <form className="terminal-search" onSubmit={(event) => void submitSearch(event)}><Search size={14} /><Input aria-label="Search token or paste mint" value={search} disabled={settling} onChange={(event) => setSearch(event.target.value)} placeholder="Token or mint" /><button type="submit" disabled={searching || settling} aria-label="Search Jupiter tokens">{searching ? <LoaderCircle className="spin" size={14} /> : "↵"}</button></form>
           <Segmented value={filter} onChange={setFilter} ariaLabel="Token feed filter" options={[{ value: "new", label: "New" }, { value: "moving", label: "Moving" }, { value: "liquid", label: "Liquid" }, { value: "pump", label: "Pump" }]} />
           <div className="terminal-feed__labels"><span>Token</span><span>Price / age</span><span>5m / vol</span></div>
           <div className="terminal-feed__body">
-            {!live ? <EmptyState icon={<Radio size={21} />} title="Mainnet feed paused" description="Select Solana Mainnet to load current Jupiter-indexed pools." /> : recent.isLoading ? <div className="terminal-loading"><LoaderCircle className="spin" size={18} /> Loading live pools…</div> : recent.error ? <EmptyState icon={<AlertTriangle size={21} />} title="Provider unavailable" description={recent.error.message} action={<Button size="sm" onClick={() => void recent.refetch()}>Retry</Button>} /> : visibleTokens.length === 0 ? <EmptyState icon={<Search size={21} />} title="No matches" description="Change the filter or search a mint." /> : visibleTokens.map((token) => <TokenFeedRow key={token.id} token={token} active={token.id === selected?.id} onSelect={() => setSelectedMint(token.id)} />)}
+            {!live ? <EmptyState icon={<Radio size={21} />} title="Mainnet feed paused" description="Select Solana Mainnet to load current Jupiter-indexed pools." /> : recent.isLoading ? <div className="terminal-loading"><LoaderCircle className="spin" size={18} /> Loading live pools…</div> : recent.error ? <EmptyState icon={<AlertTriangle size={21} />} title="Provider unavailable" description={recent.error.message} action={<Button size="sm" onClick={() => void recent.refetch()}>Retry</Button>} /> : visibleTokens.length === 0 ? <EmptyState icon={<Search size={21} />} title="No matches" description="Change the filter or search a mint." /> : visibleTokens.map((token) => <TokenFeedRow key={token.id} token={token} active={token.id === selected?.id} disabled={settling} onSelect={() => setSelectedMint(token.id)} />)}
           </div>
           <footer><span>Jupiter Tokens API</span><strong>{recent.dataUpdatedAt ? `updated ${Math.max(0, Math.floor((Date.now() - recent.dataUpdatedAt) / 1_000))}s ago` : "not loaded"}</strong></footer>
         </aside>
@@ -517,11 +532,11 @@ export function TradingTerminalScreen() {
       <section className={`terminal-trade-dock${prepared ? " has-quote" : ""}`}>
         <div className="terminal-order-card">
           <header><div><ArrowDownUp size={16} /><strong>Direct trade</strong></div><Badge tone="good">0 bps platform</Badge></header>
-          <Segmented value={direction} onChange={setDirection} ariaLabel="Trade direction" options={[{ value: "buy", label: "Buy" }, { value: "sell", label: "Sell" }]} />
-          {direction === "buy" ? <Field label="Spend" hint="Exact SOL input; network, priority and protocol fees remain visible."><div className="input-unit"><Input aria-label="Spend amount" inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); setPrepared(undefined); setPhase("idle"); }} /><span>SOL</span></div></Field> : <Field label="Sell amount" hint="Read from the connected wallet at quote time."><Segmented value={String(sellPercentage)} onChange={(value) => { setSellPercentage(Number(value)); setPrepared(undefined); setPhase("idle"); }} ariaLabel="Sell percentage" options={[{ value: "2500", label: "25%" }, { value: "5000", label: "50%" }, { value: "7500", label: "75%" }, { value: "10000", label: "100%" }]} /></Field>}
-          {direction === "buy" ? <div className="quick-amounts" aria-label="Quick SOL amounts">{["0.02", "0.05", "0.1", "0.25"].map((value) => <button type="button" key={value} onClick={() => { setAmount(value); setPrepared(undefined); setPhase("idle"); }}>{value}</button>)}</div> : null}
-          <div className="terminal-order-grid"><Field label="Slippage"><div className="input-unit"><Input aria-label="Slippage BPS" type="number" min="1" max="5000" value={slippageBps} onChange={(event) => { setSlippageBps(Number(event.target.value)); setPrepared(undefined); setPhase("idle"); }} /><span>bps</span></div></Field><Field label="Priority"><Select aria-label="Priority profile" value={priorityProfile} onChange={(event) => { setPriorityProfile(event.target.value as PriorityProfile); setPrepared(undefined); setPhase("idle"); }}><option value="medium">Medium</option><option value="high">High</option><option value="veryHigh">Very high</option></Select></Field></div>
-          <Toggle checked={fastMode} onCheckedChange={(value) => { setFastMode(value); setPrepared(undefined); setPhase("idle"); }} label="Fast route build" description="Still simulates unsigned and signed transactions before submission." />
+          <Segmented value={direction} onChange={(value) => { if (settling) return; invalidateQuote(); setDirection(value); }} ariaLabel="Trade direction" options={[{ value: "buy", label: "Buy" }, { value: "sell", label: "Sell" }]} />
+          {direction === "buy" ? <Field label="Spend" hint="Exact SOL input; network, priority and protocol fees remain visible."><div className="input-unit"><Input aria-label="Spend amount" inputMode="decimal" value={amount} disabled={settling} onChange={(event) => { invalidateQuote(); setAmount(event.target.value); }} /><span>SOL</span></div></Field> : <Field label="Sell amount" hint="Read from the connected wallet at quote time."><Segmented value={String(sellPercentage)} onChange={(value) => { if (settling) return; invalidateQuote(); setSellPercentage(Number(value)); }} ariaLabel="Sell percentage" options={[{ value: "2500", label: "25%" }, { value: "5000", label: "50%" }, { value: "7500", label: "75%" }, { value: "10000", label: "100%" }]} /></Field>}
+          {direction === "buy" ? <div className="quick-amounts" aria-label="Quick SOL amounts">{["0.02", "0.05", "0.1", "0.25"].map((value) => <button type="button" key={value} disabled={settling} onClick={() => { invalidateQuote(); setAmount(value); }}>{value}</button>)}</div> : null}
+          <div className="terminal-order-grid"><Field label="Slippage"><div className="input-unit"><Input aria-label="Slippage BPS" type="number" min="1" max="5000" value={slippageBps} disabled={settling} onChange={(event) => { invalidateQuote(); setSlippageBps(Math.min(5_000, Math.max(1, Math.trunc(Number(event.target.value) || 1)))); }} /><span>bps</span></div></Field><Field label="Priority"><Select aria-label="Priority profile" value={priorityProfile} disabled={settling} onChange={(event) => { invalidateQuote(); setPriorityProfile(event.target.value as PriorityProfile); }}><option value="medium">Medium</option><option value="high">High</option><option value="veryHigh">Very high</option></Select></Field></div>
+          <Toggle checked={fastMode} onCheckedChange={(value) => { if (settling) return; invalidateQuote(); setFastMode(value); }} label="Fast route build" description="Still simulates unsigned and signed transactions before submission." />
           <Button variant="primary" size="lg" className="terminal-quote-button" disabled={busy || !live || !selected || !wallet} onClick={() => void prepare()}>{phase === "quoting" ? <LoaderCircle className="spin" size={17} /> : <Zap size={17} />} {phase === "ready" ? "Refresh quote" : "Build & simulate"}</Button>
           {!wallet ? <p className="terminal-wallet-note"><WalletCards size={14} /> Connect a Wallet Standard signer from the header. No keys enter Sunder.</p> : null}
         </div>
@@ -536,7 +551,7 @@ export function TradingTerminalScreen() {
             <div><span>Protocol / LP fee</span><strong>Included in route output</strong></div>
             <div><span>Sunder platform fee</span><strong className="is-positive">0 SOL · 0 bps</strong></div>
             {direction === "buy" ? <div><span>1% venue reference</span><strong className="is-negative">{formatSol(referenceVenueFee)} not charged</strong></div> : null}
-            <div><span>Quote blockhash</span><strong>{shorten(String(prepared.build.blockhashWithMetadata.blockhash.join("-")), 7, 7)}</strong></div>
+            <div><span>Quote blockhash</span><strong>{shorten(prepared.recentBlockhash, 7, 7)}</strong></div>
           </div> : <div className="terminal-quote-empty"><Info size={20} /><div><strong>No simulated quote</strong><span>Build uses Jupiter platformFeeBps=0, then RPC simulation. The wallet is asked only after that passes.</span></div></div>}
           {error ? <div className="terminal-error" role="alert"><AlertTriangle size={16} /><span>{error}</span></div> : null}
           {prepared && phase !== "confirmed" ? <Button variant="primary" size="lg" disabled={busy || phase !== "ready"} onClick={() => void execute()}><WalletCards size={17} /> Sign and submit</Button> : null}

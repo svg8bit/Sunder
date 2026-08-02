@@ -7,7 +7,7 @@ The application supports Solana Mainnet and Ethereum Mainnet as product modes. D
 ## Product areas
 
 - Dashboard, Projects, Wallets, XID and Leaders
-- Launch Studio with Quick Deploy, Bundle, Snipe, LBS and Dev only modes
+- Launch Studio with Quick Deploy, Bundle, Snipe, LBS and Dev-only modes
 - Chain-agnostic P0 Sniper Engine
 - Swap Manager, Buy Tasks, Auto TP, Smart Sell and Anti-Sniper
 - Solana live terminal with recent-pool discovery, confirmed Pump trade events, direct Jupiter quotes and exact confirmed realized net cash-flow PnL for tracked inventory; unvalued holdings and incomplete history remain explicitly excluded

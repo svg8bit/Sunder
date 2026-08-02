@@ -15,6 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark": "vitest run tests/performance/sniper.performance.test.ts --reporter=verbose",
+    "review:final": "bash scripts/coderabbit-final-review.sh",
     "test:e2e": "playwright test",
     "test:all": "npm run lint && npm run typecheck && npm test && npm run build && npm run test:sites && npm run test:e2e",
     "verify:vercel": "npm run lint && npm run typecheck && npm test && npm run build && npm run test:sites",

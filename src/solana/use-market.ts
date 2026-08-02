@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { SOLANA_MAINNET_WS_URL } from "./client";
 import { fetchRecentTokens, subscribePumpTrades, type PumpTrade } from "./market";
 
 export function useRecentTokens(enabled: boolean) {
@@ -27,27 +28,52 @@ export function usePumpTradeStream(input: {
       setStatus("idle");
       return;
     }
+    const mint = input.mint;
+    const decimals = input.decimals;
     let active = true;
     let unsubscribe: (() => Promise<void>) | undefined;
-    setStatus("connecting");
-    void subscribePumpTrades({
-      mint: input.mint,
-      decimals: input.decimals,
-      websocketUrl: import.meta.env.VITE_SOLANA_MAINNET_WS_URL?.trim() || "wss://solana-rpc.publicnode.com",
-      onDisconnect: () => { if (active) setStatus("failed"); },
-      onTrade: (trade) => {
-        if (!active) return;
-        setTrades((current) => Object.freeze([trade, ...current.filter((item) => item.signature !== trade.signature)].slice(0, 80)));
-      },
-    }).then((stop) => {
-      if (!active) return void stop();
-      unsubscribe = stop;
-      setStatus("live");
-    }).catch(() => {
-      if (active) setStatus("failed");
-    });
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    let retryScheduled = false;
+    const maxAttempts = 5;
+    const scheduleRetry = () => {
+      if (!active || retryScheduled) return;
+      unsubscribe = undefined;
+      if (attempts >= maxAttempts) {
+        setStatus("failed");
+        return;
+      }
+      retryScheduled = true;
+      setStatus("connecting");
+      const delayMs = Math.min(4_000, 400 * 2 ** Math.max(0, attempts - 1));
+      retryTimer = setTimeout(() => {
+        retryScheduled = false;
+        connect();
+      }, delayMs);
+    };
+    function connect() {
+      if (!active) return;
+      attempts += 1;
+      setStatus("connecting");
+      void subscribePumpTrades({
+        mint,
+        decimals,
+        websocketUrl: SOLANA_MAINNET_WS_URL,
+        onDisconnect: scheduleRetry,
+        onTrade: (trade) => {
+          if (!active) return;
+          setTrades((current) => Object.freeze([trade, ...current.filter((item) => item.signature !== trade.signature)].slice(0, 80)));
+        },
+      }).then((stop) => {
+        if (!active) return void stop();
+        unsubscribe = stop;
+        setStatus("live");
+      }).catch(scheduleRetry);
+    }
+    connect();
     return () => {
       active = false;
+      if (retryTimer) clearTimeout(retryTimer);
       if (unsubscribe) void unsubscribe();
     };
   }, [input.decimals, input.enabled, input.mint]);
