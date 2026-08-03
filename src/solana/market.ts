@@ -1,4 +1,3 @@
-import { getBase58Decoder, getBase64Codec, type Base64EncodedBytes } from "@solana/kit";
 import { z } from "zod";
 
 // The key-backed api.jup.ag gateway rejects anonymous browser traffic. Jupiter's
@@ -10,6 +9,24 @@ export const PUMP_AMM_PROGRAM_ADDRESS = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FM
 const TRADE_EVENT_DISCRIMINATOR = Uint8Array.from([189, 219, 127, 211, 78, 230, 97, 238]);
 const AMM_BUY_EVENT_DISCRIMINATOR = Uint8Array.from([103, 244, 82, 31, 44, 245, 119, 119]);
 const AMM_SELL_EVENT_DISCRIMINATOR = Uint8Array.from([62, 47, 55, 10, 165, 3, 220, 42]);
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function decodeBase64Bytes(value: string): Uint8Array {
+  return Uint8Array.from(globalThis.atob(value), (character) => character.charCodeAt(0));
+}
+
+function encodeBase58Bytes(value: Uint8Array): string {
+  let integer = 0n;
+  for (const byte of value) integer = (integer << 8n) | BigInt(byte);
+  let encoded = "";
+  while (integer > 0n) {
+    encoded = BASE58_ALPHABET[Number(integer % 58n)] + encoded;
+    integer /= 58n;
+  }
+  let leadingZeroes = 0;
+  while (leadingZeroes < value.length && value[leadingZeroes] === 0) leadingZeroes += 1;
+  return "1".repeat(leadingZeroes) + encoded;
+}
 
 const optionalNumber = z.preprocess(
   (value) => value === null ? undefined : value,
@@ -267,7 +284,7 @@ export function decodePumpTradeLog(
   if (!log.startsWith("Program data: ")) return undefined;
   let data: Uint8Array;
   try {
-    data = Uint8Array.from(getBase64Codec().encode(log.slice("Program data: ".length) as Base64EncodedBytes));
+    data = decodeBase64Bytes(log.slice("Program data: ".length));
   } catch {
     return undefined;
   }
@@ -275,7 +292,7 @@ export function decodePumpTradeLog(
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let cursor = 8;
   const key = () => {
-    const value = getBase58Decoder().decode(data.slice(cursor, cursor + 32));
+    const value = encodeBase58Bytes(data.slice(cursor, cursor + 32));
     cursor += 32;
     return value;
   };
@@ -316,7 +333,7 @@ export function decodePumpAmmTradeLog(
   if (!log.startsWith("Program data: ")) return undefined;
   let data: Uint8Array;
   try {
-    data = Uint8Array.from(getBase64Codec().encode(log.slice("Program data: ".length) as Base64EncodedBytes));
+    data = decodeBase64Bytes(log.slice("Program data: ".length));
   } catch {
     return undefined;
   }
@@ -328,7 +345,7 @@ export function decodePumpAmmTradeLog(
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let cursor = 8;
   const key = () => {
-    const value = getBase58Decoder().decode(data.slice(cursor, cursor + 32));
+    const value = encodeBase58Bytes(data.slice(cursor, cursor + 32));
     cursor += 32;
     return value;
   };
