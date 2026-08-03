@@ -71,20 +71,6 @@ function formatMarketCap(value: number): string {
   return `$${new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: absolute < 1_000_000 ? 1 : 2 }).format(value)}`;
 }
 
-function preserveVisualPriceContext(baseImplementation: () => { readonly priceRange: { minValue: number; maxValue: number } | null; readonly margins?: { above: number; below: number } } | null) {
-  const result = baseImplementation();
-  if (!result?.priceRange) return result;
-  const { minValue, maxValue } = result.priceRange;
-  const center = (minValue + maxValue) / 2;
-  const observedSpan = maxValue - minValue;
-  const minimumSpan = Math.abs(center) * 0.04;
-  if (!Number.isFinite(minimumSpan) || minimumSpan <= 0 || observedSpan >= minimumSpan) return result;
-  return {
-    ...result,
-    priceRange: { minValue: center - minimumSpan / 2, maxValue: center + minimumSpan / 2 },
-  };
-}
-
 function showRecentWindow(chart: IChartApi, candleCount: number): void {
   const visibleBars = candleCount < 12 ? 18 : Math.min(72, Math.max(24, candleCount + 8));
   chart.timeScale().setVisibleLogicalRange({
@@ -182,7 +168,6 @@ export function LiveCandlestickChart({ instrumentId, observations, trades, symbo
         borderDownColor: "#ff4f71",
         wickUpColor: "#24d3a2",
         wickDownColor: "#ff4f71",
-        autoscaleInfoProvider: preserveVisualPriceContext,
         priceFormat: { type: "custom", formatter, minMove: metric === "market-cap" ? 1 : 0.000000000001 },
       });
       const nextVolume = nextChart.addSeries(HistogramSeries, {

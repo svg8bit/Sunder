@@ -23,12 +23,16 @@ import {
   type Transaction,
 } from "@solana/kit";
 import { z } from "zod";
+import { isSolanaTimeout, solanaStageError, stringifySolanaRpcValue } from "./rpc-errors";
 
 export const JUPITER_SWAP_BUILD_ENDPOINT = "https://api.jup.ag/swap/v2/build";
 export const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
 const COMPUTE_BUDGET_PROGRAM = address("ComputeBudget111111111111111111111111111111");
 const COMPUTE_UNIT_LIMIT_MAX = 1_400_000;
 const PROVIDER_TIMEOUT_MS = 15_000;
+const JUPITER_BUILD_TIMEOUT_MS = 8_000;
+const BALANCE_RPC_TIMEOUT_MS = 8_000;
+const PUBLICNODE_SOLANA_MAINNET_RPC_URL = "https://solana-rpc.publicnode.com";
 const atomicString = z.string().max(78).regex(/^[0-9]+$/);
 
 function deadlineSignal(signal?: AbortSignal, timeoutMs = PROVIDER_TIMEOUT_MS): AbortSignal {
@@ -126,13 +130,29 @@ export async function requestJupiterBuild(
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
 ): Promise<JupiterBuildResponse> {
-  const response = await fetcher(buildJupiterSwapUrl(intent), {
-    method: "GET",
-    credentials: "omit",
-    headers: { accept: "application/json" },
-    signal: deadlineSignal(signal),
-  });
-  if (!response.ok) {
+  let response: Response | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      response = await fetcher(buildJupiterSwapUrl(intent), {
+        method: "GET",
+        credentials: "omit",
+        headers: { accept: "application/json" },
+        signal: deadlineSignal(signal, JUPITER_BUILD_TIMEOUT_MS),
+      });
+      if (response.ok || (response.status !== 429 && response.status < 500)) break;
+      lastError = new Error(`Jupiter build returned retryable HTTP ${response.status}.`);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      lastError = error;
+      if (!isSolanaTimeout(error) && attempt > 0) throw solanaStageError("Jupiter route build", error);
+    }
+    if (attempt === 0) continue;
+  }
+  if (!response?.ok) {
+    if (!response || response.status === 429 || response.status >= 500) {
+      throw solanaStageError("Jupiter route build", lastError ?? new Error("Provider unavailable."));
+    }
     let detail = "Quote unavailable.";
     try {
       const payload = z.object({ error: z.string().max(512).optional() }).parse(await response.json());
@@ -258,16 +278,21 @@ export async function prepareJupiterSwap(input: {
 }): Promise<PreparedJupiterSwap> {
   const build = await requestJupiterBuild(input.intent, input.signal);
   const simulationTransaction = compile(build, address(input.intent.taker), COMPUTE_UNIT_LIMIT_MAX);
-  const simulation = await input.client.runtime.rpc.simulateTransaction(
-    getBase64EncodedWireTransaction(simulationTransaction),
-    {
-      encoding: "base64",
-      commitment: "confirmed",
-      sigVerify: false,
-      replaceRecentBlockhash: false,
-    },
-  ).send({ abortSignal: deadlineSignal(input.signal) });
-  if (simulation.value.err) throw new Error(`RPC simulation failed: ${JSON.stringify(simulation.value.err)}`);
+  let simulation;
+  try {
+    simulation = await input.client.runtime.rpc.simulateTransaction(
+      getBase64EncodedWireTransaction(simulationTransaction),
+      {
+        encoding: "base64",
+        commitment: "confirmed",
+        sigVerify: false,
+        replaceRecentBlockhash: false,
+      },
+    ).send({ abortSignal: deadlineSignal(input.signal) });
+  } catch (error) {
+    throw solanaStageError("Unsigned RPC simulation", error);
+  }
+  if (simulation.value.err) throw new Error(`RPC simulation failed: ${stringifySolanaRpcValue(simulation.value.err)}`);
   const consumed = Number(simulation.value.unitsConsumed ?? 0n);
   const computeUnitLimit = consumed > 0
     ? Math.min(Math.ceil(consumed * 1.2), COMPUTE_UNIT_LIMIT_MAX)
@@ -276,16 +301,21 @@ export async function prepareJupiterSwap(input: {
     ? simulationTransaction
     : compile(build, address(input.intent.taker), computeUnitLimit);
   if (transaction !== simulationTransaction) {
-    const exactSimulation = await input.client.runtime.rpc.simulateTransaction(
-      getBase64EncodedWireTransaction(transaction),
-      {
-        encoding: "base64",
-        commitment: "confirmed",
-        sigVerify: false,
-        replaceRecentBlockhash: false,
-      },
-    ).send({ abortSignal: deadlineSignal(input.signal) });
-    if (exactSimulation.value.err) throw new Error(`Final RPC simulation failed: ${JSON.stringify(exactSimulation.value.err)}`);
+    let exactSimulation;
+    try {
+      exactSimulation = await input.client.runtime.rpc.simulateTransaction(
+        getBase64EncodedWireTransaction(transaction),
+        {
+          encoding: "base64",
+          commitment: "confirmed",
+          sigVerify: false,
+          replaceRecentBlockhash: false,
+        },
+      ).send({ abortSignal: deadlineSignal(input.signal) });
+    } catch (error) {
+      throw solanaStageError("Final unsigned RPC simulation", error);
+    }
+    if (exactSimulation.value.err) throw new Error(`Final RPC simulation failed: ${stringifySolanaRpcValue(exactSimulation.value.err)}`);
   }
   const unitPrice = computeUnitPriceMicroLamports(build);
   const estimatedPriority = (BigInt(computeUnitLimit) * unitPrice + 999_999n) / 1_000_000n;
@@ -309,13 +339,13 @@ interface RpcEnvelope<T> {
 }
 
 let rpcSequence = 0;
-async function rpc<T>(rpcUrl: string, method: string, params: readonly unknown[], signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<T> {
+async function rpc<T>(rpcUrl: string, method: string, params: readonly unknown[], signal?: AbortSignal, fetcher: typeof fetch = fetch, timeoutMs = PROVIDER_TIMEOUT_MS): Promise<T> {
   const response = await fetcher(rpcUrl, {
     method: "POST",
     credentials: "omit",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcSequence, method, params }),
-    signal: deadlineSignal(signal),
+    signal: deadlineSignal(signal, timeoutMs),
   });
   if (!response.ok) throw new Error(`Solana RPC ${method} returned HTTP ${response.status}.`);
   const envelope = await response.json() as RpcEnvelope<T>;
@@ -414,7 +444,7 @@ export function analyzeJupiterSwapReceipt(prepared: PreparedJupiterSwap, signatu
   if (!parsed.success) throw new Error("Confirmed transaction evidence has an invalid RPC shape.");
   const evidence = parsed.data;
   if (!evidence.meta) throw new Error("Confirmed transaction metadata is unavailable.");
-  if (evidence.meta.err) throw new Error(`Confirmed transaction reverted: ${JSON.stringify(evidence.meta.err)}`);
+  if (evidence.meta.err) throw new Error(`Confirmed transaction reverted: ${stringifySolanaRpcValue(evidence.meta.err)}`);
   const keys = evidence.transaction.message.accountKeys.map(accountKey);
   const tokenBalances = [...(evidence.meta.preTokenBalances ?? []), ...(evidence.meta.postTokenBalances ?? [])];
   if (tokenBalances.some((balance) => balance.accountIndex >= keys.length)) {
@@ -489,19 +519,29 @@ export async function executePreparedJupiterSwap(input: {
   assertIsFullySignedTransaction(signed);
   input.onState?.("signed");
   const wire = getBase64EncodedWireTransaction(signed);
-  const signedSimulation = await input.client.runtime.rpc.simulateTransaction(wire, {
-    encoding: "base64",
-    commitment: "confirmed",
-    sigVerify: true,
-    replaceRecentBlockhash: false,
-  }).send({ abortSignal: deadlineSignal(input.signal, 25_000) });
-  if (signedSimulation.value.err) throw new Error(`Signed transaction simulation failed: ${JSON.stringify(signedSimulation.value.err)}`);
-  const signature = String(await input.client.runtime.rpc.sendTransaction(wire, {
-    encoding: "base64",
-    maxRetries: 2n,
-    preflightCommitment: "confirmed",
-    skipPreflight: false,
-  }).send({ abortSignal: deadlineSignal(input.signal, 25_000) }));
+  let signedSimulation;
+  try {
+    signedSimulation = await input.client.runtime.rpc.simulateTransaction(wire, {
+      encoding: "base64",
+      commitment: "confirmed",
+      sigVerify: true,
+      replaceRecentBlockhash: false,
+    }).send({ abortSignal: deadlineSignal(input.signal, 25_000) });
+  } catch (error) {
+    throw solanaStageError("Signed RPC simulation", error);
+  }
+  if (signedSimulation.value.err) throw new Error(`Signed transaction simulation failed: ${stringifySolanaRpcValue(signedSimulation.value.err)}`);
+  let signature: string;
+  try {
+    signature = String(await input.client.runtime.rpc.sendTransaction(wire, {
+      encoding: "base64",
+      maxRetries: 2n,
+      preflightCommitment: "confirmed",
+      skipPreflight: false,
+    }).send({ abortSignal: deadlineSignal(input.signal, 25_000) }));
+  } catch (error) {
+    throw solanaStageError("Signed transaction submission", error, "submission-unknown");
+  }
   input.onState?.("submitted", signature);
 
   const startedAt = Date.now();
@@ -511,7 +551,7 @@ export async function executePreparedJupiterSwap(input: {
   while (Date.now() - startedAt < 75_000) {
     const statuses = await input.client.runtime.rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: true }).send({ abortSignal: deadlineSignal(input.signal) });
     const status = statuses.value[0];
-    if (status?.err) throw new Error(`On-chain transaction failed: ${JSON.stringify(status.err)}`);
+    if (status?.err) throw new Error(`On-chain transaction failed: ${stringifySolanaRpcValue(status.err)}`);
     if (status && !observedProcessed) {
       observedProcessed = true;
       input.onState?.("processed", signature);
@@ -570,14 +610,31 @@ export async function getWalletTokenBalanceAtomic(input: {
   readonly owner: string;
   readonly mint: string;
   readonly signal?: AbortSignal;
+  readonly fallbackRpcUrls?: readonly string[];
+  readonly fetcher?: typeof fetch;
 }): Promise<bigint> {
-  const result = await rpc<unknown>(
+  const rpcUrls = [...new Set([
     input.rpcUrl,
-    "getTokenAccountsByOwner",
-    [input.owner, { mint: input.mint }, { encoding: "jsonParsed", commitment: "confirmed" }],
-    input.signal,
-  );
-  const parsed = tokenAccountsByOwnerSchema.safeParse(result);
-  if (!parsed.success) throw new Error("Solana RPC returned an invalid token-account balance payload.");
-  return parsed.data.value.reduce((sum, account) => sum + BigInt(account.account.data.parsed.info.tokenAmount.amount), 0n);
+    ...(input.fallbackRpcUrls ?? [PUBLICNODE_SOLANA_MAINNET_RPC_URL]),
+  ].filter(Boolean))];
+  let lastError: unknown;
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const result = await rpc<unknown>(
+        rpcUrl,
+        "getTokenAccountsByOwner",
+        [input.owner, { mint: input.mint }, { encoding: "jsonParsed", commitment: "confirmed" }],
+        input.signal,
+        input.fetcher,
+        BALANCE_RPC_TIMEOUT_MS,
+      );
+      const parsed = tokenAccountsByOwnerSchema.safeParse(result);
+      if (!parsed.success) throw new Error("Solana RPC returned an invalid token-account balance payload.");
+      return parsed.data.value.reduce((sum, account) => sum + BigInt(account.account.data.parsed.info.tokenAmount.amount), 0n);
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      lastError = error;
+    }
+  }
+  throw solanaStageError("Token balance lookup on all configured RPC providers", lastError ?? new Error("No RPC provider configured."));
 }

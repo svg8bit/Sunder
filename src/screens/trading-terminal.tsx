@@ -168,9 +168,9 @@ function PumpTape({ trades, status, token }: { readonly trades: readonly PumpTra
       <div className="terminal-tape__labels"><span>Side / SOL</span><span>Tokens</span><span>Trader</span><span>Age</span></div>
       <div className="terminal-tape__body">
         {trades.length === 0 ? (
-          <div className="terminal-tape__empty"><Wifi size={20} /><strong>{status === "failed" ? "WebSocket unavailable" : "Waiting for Pump events"}</strong><span>{token ? `No confirmed ${token.symbol} trades observed in this session.` : "Select a token."}</span></div>
+          <div className="terminal-tape__empty"><Wifi size={20} /><strong>{status === "failed" ? "WebSocket unavailable" : "Loading confirmed Pump history"}</strong><span>{token ? `No confirmed ${token.symbol} trade events are available yet.` : "Select a token."}</span></div>
         ) : trades.map((trade) => (
-          <a key={`${trade.signature}:${trade.slot}`} className={`terminal-tape__row is-${trade.side}`} href={`https://solscan.io/tx/${encodeURIComponent(trade.signature)}`} target="_blank" rel="noreferrer">
+          <a key={`${trade.signature}:${trade.eventIndex}`} className={`terminal-tape__row is-${trade.side}`} href={`https://solscan.io/tx/${encodeURIComponent(trade.signature)}`} target="_blank" rel="noreferrer">
             <span><b>{trade.side === "buy" ? "B" : "S"}</b>{formatAtomicAmount(trade.solAmountLamports, 9, 3)}</span>
             <span>{formatCompact(Number(trade.tokenAmountAtomic) / 10 ** (token?.decimals ?? 6))}</span>
             <span>{shorten(trade.user, 3, 3)}</span>
@@ -298,7 +298,10 @@ export function TradingTerminalScreen() {
       toast.error(routeError instanceof Error ? routeError.message : String(routeError));
       setSelectedMint(undefined);
     });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      routeLookups.current.delete(selectedMint);
+    };
   }, [selectToken, selected, selectedMint]);
 
   useEffect(() => {

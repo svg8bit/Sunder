@@ -1,10 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SOLANA_MAINNET_RPC_URL, SOLANA_MAINNET_WS_URL } from "./client";
-import { fetchPumpTradeHistory, fetchRecentTokens, mergeConfirmedPumpTrade, mergePumpTradeHistory, parseTokenInformationList, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
+import { fetchPumpTradeHistory, fetchPumpTradeHistoryFromApi, fetchRecentTokens, mergeConfirmedPumpTrade, mergePumpTradeHistory, parsePumpTradeHistory, parseTokenInformationList, serializePumpTradeHistory, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
 
 const RECENT_CACHE_KEY = "sunder:solana-recent-tokens:v1";
 const RECENT_CACHE_MAX_AGE_MS = 120_000;
+const PUMP_TRADE_CACHE_KEY = "sunder:solana-pump-trades:v1";
+const PUMP_TRADE_CACHE_MAX_AGE_MS = 30 * 60_000;
 
 interface RecentTokenCache {
   readonly at: number;
@@ -26,6 +28,30 @@ function writeRecentTokenCache(tokens: readonly TokenInformation[]): void {
     window.localStorage.setItem(RECENT_CACHE_KEY, JSON.stringify({ at: Date.now(), tokens: tokens.slice(0, 40) }));
   } catch {
     // Storage policy and quota failures must not interrupt the live feed.
+  }
+}
+
+function readPumpTradeCache(mint: string | undefined): { readonly at: number; readonly trades: readonly PumpTrade[] } | undefined {
+  if (!mint) return undefined;
+  try {
+    const value = JSON.parse(window.localStorage.getItem(PUMP_TRADE_CACHE_KEY) ?? "null") as { readonly at?: unknown; readonly mint?: unknown; readonly trades?: unknown } | null;
+    if (!value || value.mint !== mint || typeof value.at !== "number" || Date.now() - value.at > PUMP_TRADE_CACHE_MAX_AGE_MS) return undefined;
+    return { at: value.at, trades: parsePumpTradeHistory(value.trades) };
+  } catch {
+    return undefined;
+  }
+}
+
+function writePumpTradeCache(mint: string, trades: readonly PumpTrade[]): void {
+  if (trades.length === 0) return;
+  try {
+    window.localStorage.setItem(PUMP_TRADE_CACHE_KEY, JSON.stringify({
+      at: Date.now(),
+      mint,
+      trades: JSON.parse(serializePumpTradeHistory(trades)) as unknown,
+    }));
+  } catch {
+    // A cache failure never interrupts the canonical live stream.
   }
 }
 
@@ -53,18 +79,24 @@ export function usePumpTradeStream(input: {
   readonly mint?: string;
   readonly decimals?: number;
 }) {
+  const cached = useMemo(() => readPumpTradeCache(input.mint), [input.mint]);
   const [trades, setTrades] = useState<readonly PumpTrade[]>([]);
   const [status, setStatus] = useState<"idle" | "connecting" | "live" | "failed">("idle");
   const history = useQuery({
     queryKey: ["solana", "pump", "trade-history", input.mint, input.decimals],
-    queryFn: ({ signal }) => fetchPumpTradeHistory({
-      mint: input.mint!,
-      decimals: input.decimals!,
-      rpcUrl: SOLANA_MAINNET_RPC_URL,
-      limit: 48,
-      signal,
-    }),
+    queryFn: async ({ signal }) => {
+      if (import.meta.env.PROD) {
+        try {
+          return await fetchPumpTradeHistoryFromApi({ mint: input.mint!, decimals: input.decimals!, signal });
+        } catch (proxyError) {
+          if (signal.aborted) throw proxyError;
+        }
+      }
+      return fetchPumpTradeHistory({ mint: input.mint!, decimals: input.decimals!, rpcUrl: SOLANA_MAINNET_RPC_URL, limit: 48, signal });
+    },
     enabled: input.enabled && Boolean(input.mint) && input.decimals !== undefined,
+    initialData: cached?.trades,
+    initialDataUpdatedAt: cached?.at,
     staleTime: 60_000,
     gcTime: 5 * 60_000,
     retry: 1,
@@ -72,11 +104,14 @@ export function usePumpTradeStream(input: {
   });
 
   useEffect(() => {
-    if (history.data) setTrades((current) => mergePumpTradeHistory(current, history.data));
-  }, [history.data]);
+    if (history.data) {
+      setTrades((current) => mergePumpTradeHistory(current, history.data));
+      if (input.mint) writePumpTradeCache(input.mint, history.data);
+    }
+  }, [history.data, input.mint]);
 
   useEffect(() => {
-    setTrades(history.data ?? []);
+    setTrades(cached?.trades ?? history.data ?? []);
     if (!input.enabled || !input.mint || input.decimals === undefined) {
       setStatus("idle");
       return;
@@ -134,7 +169,11 @@ export function usePumpTradeStream(input: {
       if (retryTimer) clearTimeout(retryTimer);
       if (unsubscribe) void unsubscribe();
     };
-  }, [input.decimals, input.enabled, input.mint]);
+  }, [cached?.trades, input.decimals, input.enabled, input.mint]);
+
+  useEffect(() => {
+    if (input.mint && trades.length > 0) writePumpTradeCache(input.mint, trades);
+  }, [input.mint, trades]);
 
   return { trades, status } as const;
 }

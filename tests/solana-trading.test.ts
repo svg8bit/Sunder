@@ -4,13 +4,15 @@ import { applyPercentageBps, formatAtomicAmount, parseDecimalAmount } from "../s
 import {
   analyzeJupiterSwapReceipt,
   buildJupiterSwapUrl,
+  getWalletTokenBalanceAtomic,
   isJupiterBlockhashValid,
   requestJupiterBuild,
   WRAPPED_SOL_MINT,
   type JupiterBuildResponse,
   type PreparedJupiterSwap,
 } from "../src/solana/jupiter";
-import { decodePumpTradeLog, fetchPumpTradeHistory, fetchRecentTokens, normalizePumpTradeEvent, PUMP_PROGRAM_ADDRESS, safeTokenIcon, searchTokenInformation } from "../src/solana/market";
+import { decodePumpAmmTradeLog, decodePumpTradeLog, fetchPumpTradeHistory, fetchRecentTokens, normalizePumpTradeEvent, parsePumpTradeHistory, PUMP_PROGRAM_ADDRESS, safeTokenIcon, searchTokenInformation, serializePumpTradeHistory } from "../src/solana/market";
+import { solanaStageError, stringifySolanaRpcValue } from "../src/solana/rpc-errors";
 import { deriveTrackedPosition, parseStoredTrades, type ConfirmedTradeRecord } from "../src/state/trading";
 
 const tokenMint = "ToKeN111111111111111111111111111111111111111";
@@ -37,6 +39,30 @@ function pumpTradeLog(mint = WRAPPED_SOL_MINT): string {
   key(PUMP_PROGRAM_ADDRESS);
   u64(25n);
   u64(500_000n);
+  return `Program data: ${Buffer.from(data).toString("base64")}`;
+}
+
+function pumpAmmTradeLog(side: "buy" | "sell" = "sell"): string {
+  const data = new Uint8Array(side === "buy" ? 480 : 417);
+  data.set(side === "buy" ? [103, 244, 82, 31, 44, 245, 119, 119] : [62, 47, 55, 10, 165, 3, 220, 42]);
+  const view = new DataView(data.buffer);
+  let cursor = 8;
+  const key = () => { data.set(getBase58Encoder().encode(PUMP_PROGRAM_ADDRESS), cursor); cursor += 32; };
+  const u64 = (value: bigint) => { view.setBigUint64(cursor, value, true); cursor += 8; };
+  view.setBigInt64(cursor, 1_700_000_000n, true); cursor += 8;
+  u64(1_000_000n); // base amount
+  u64(3_500_000n); // max/min quote amount
+  u64(10_000_000n); // user base reserves
+  u64(1_000_000_000n); // user quote reserves
+  u64(1_000_000_000n); // pool base reserves (1,000 tokens at 6 decimals)
+  u64(3_000_000_000n); // pool quote reserves (3 SOL)
+  u64(3_000_000n); // actual quote amount
+  u64(20n); u64(600n); // LP fee BPS + lamports
+  u64(5n); u64(150n); // protocol fee BPS + lamports
+  u64(3_000_600n); // quote with/without LP fee
+  u64(3_000_750n); // user quote amount
+  for (let index = 0; index < 7; index += 1) key();
+  u64(25n); u64(750n); // creator fee BPS + lamports
   return `Program data: ${Buffer.from(data).toString("base64")}`;
 }
 
@@ -178,6 +204,46 @@ describe("Jupiter direct execution boundary", () => {
     expect(goodFetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("retries one transient Jupiter failure and preserves a valid manifest", async () => {
+    const fetcherMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "temporarily unavailable" }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(buildManifest()), { status: 200, headers: { "content-type": "application/json" } }));
+    const result = await requestJupiterBuild(
+      { direction: "buy", tokenMint, amountAtomic: 100_000_000n, taker: wallet, slippageBps: 100, priorityProfile: "high", fastMode: false },
+      undefined,
+      fetcherMock as unknown as typeof fetch,
+    );
+    expect(result.outAmount).toBe("500000000");
+    expect(fetcherMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to a second read-only RPC for a canonical sell balance", async () => {
+    const primary = "https://primary-rpc.example";
+    const fallback = "https://fallback-rpc.example";
+    const fetcherMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === primary) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { amount: "20337803603" } } } } } }] },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    await expect(getWalletTokenBalanceAtomic({
+      rpcUrl: primary,
+      fallbackRpcUrls: [fallback],
+      owner: wallet,
+      mint: tokenMint,
+      fetcher: fetcherMock as unknown as typeof fetch,
+    })).resolves.toBe(20_337_803_603n);
+    expect(fetcherMock.mock.calls.map(([input]) => String(input))).toEqual([primary, fallback]);
+  });
+
+  it("renders bigint RPC failures safely and gives a bounded pre-submit timeout state", () => {
+    expect(stringifySolanaRpcValue({ InstructionError: [1n, { Custom: 7n }] })).toBe('{"InstructionError":["1",{"Custom":"7"}]}');
+    expect(solanaStageError("Token balance lookup", new DOMException("signal timed out", "TimeoutError")).message)
+      .toMatch(/timed out before submission.*No transaction was sent/);
+  });
+
   it("derives exact wallet deltas only from confirmed transaction metadata", () => {
     const result = analyzeJupiterSwapReceipt(prepared(), "x".repeat(88), {
       slot: 42,
@@ -304,6 +370,33 @@ describe("live token and Pump event validation", () => {
     const decoded = decodePumpTradeLog(pumpTradeLog(), { signature: "z".repeat(88), eventIndex: 17, slot: 101, decimals: 6 });
     expect(decoded).toMatchObject({ mint: WRAPPED_SOL_MINT, user: PUMP_PROGRAM_ADDRESS, side: "buy", eventIndex: 17, feeBasisPoints: 100, creatorFeeBasisPoints: 25, priceSol: 0.000003 });
     expect(decodePumpTradeLog("Program log: not an event", { signature: "z".repeat(88), slot: 101, decimals: 6 })).toBeUndefined();
+  });
+
+  it("decodes the official graduated Pump AMM buy/sell prefix with reserve-price OHLC", () => {
+    const decoded = decodePumpAmmTradeLog(pumpAmmTradeLog("sell"), {
+      signature: "a".repeat(88),
+      eventIndex: 3,
+      slot: 102,
+      decimals: 6,
+      mint: tokenMint,
+    });
+    expect(decoded).toMatchObject({ mint: tokenMint, user: PUMP_PROGRAM_ADDRESS, side: "sell", eventIndex: 3, feeBasisPoints: 25, creatorFeeBasisPoints: 25, priceSol: 0.003 });
+    const restored = parsePumpTradeHistory(JSON.parse(serializePumpTradeHistory([decoded!]))) as readonly typeof decoded[];
+    expect(restored[0]?.tokenAmountAtomic).toBe(1_000_000n);
+    expect(restored[0]?.virtualSolReservesLamports).toBe(3_000_000_000n);
+  });
+
+  it("backfills graduated Pump AMM events instead of losing the chart after refresh", async () => {
+    const signature = "y".repeat(88);
+    const fetcherMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { readonly method: string };
+      if (request.method === "getSignaturesForAddress") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [{ signature, slot: 102, err: null }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { slot: 102, meta: { logMessages: [pumpAmmTradeLog("sell")] } } }), { status: 200 });
+    });
+    const history = await fetchPumpTradeHistory({ mint: tokenMint, decimals: 6, rpcUrl: "https://rpc.example", fetcher: fetcherMock as unknown as typeof fetch });
+    expect(history).toMatchObject([{ signature, mint: tokenMint, side: "sell", priceSol: 0.003 }]);
   });
 
   it("backfills bounded confirmed Pump transactions for real historical candles", async () => {

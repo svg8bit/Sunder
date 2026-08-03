@@ -13,6 +13,7 @@ import {
 import { mainnet, sepolia } from "wagmi/chains";
 import type { Hex } from "viem";
 import { useNetwork } from "../state/network";
+import { stringifySolanaRpcValue } from "../solana/rpc-errors";
 
 export type VerificationState =
   | { readonly state: "idle" }
@@ -64,7 +65,7 @@ export function useSolanaWalletState() {
         sigVerify: false,
         replaceRecentBlockhash: false,
       }).send();
-      if (unsignedSimulation.value.err) throw new Error(`Devnet simulation failed: ${JSON.stringify(unsignedSimulation.value.err)}`);
+      if (unsignedSimulation.value.err) throw new Error(`Devnet simulation failed: ${stringifySolanaRpcValue(unsignedSimulation.value.err)}`);
       setVerification({ state: "awaiting-signature", detail: "Simulation passed. Approve the Devnet transaction in your wallet." });
 
       if (prepared.mode === "partial") {
@@ -76,7 +77,7 @@ export function useSolanaWalletState() {
           sigVerify: true,
           replaceRecentBlockhash: false,
         }).send();
-        if (signedSimulation.value.err) throw new Error(`Signed Devnet simulation failed: ${JSON.stringify(signedSimulation.value.err)}`);
+        if (signedSimulation.value.err) throw new Error(`Signed Devnet simulation failed: ${stringifySolanaRpcValue(signedSimulation.value.err)}`);
         signature = String(await client.runtime.rpc.sendTransaction(wireTransaction, {
           encoding: "base64",
           maxRetries: 2n,
@@ -95,7 +96,7 @@ export function useSolanaWalletState() {
       while (Date.now() - startedAt < 60_000) {
         const response = await client.runtime.rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: true }).send();
         const status = response.value[0];
-        if (status?.err) throw new Error(`Devnet transaction failed: ${JSON.stringify(status.err)}`);
+        if (status?.err) throw new Error(`Devnet transaction failed: ${stringifySolanaRpcValue(status.err)}`);
         if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") {
           const confirmed: VerificationState = { state: "confirmed", detail: `RPC status: ${status.confirmationStatus}.`, signature };
           setVerification(confirmed);

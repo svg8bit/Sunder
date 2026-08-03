@@ -6,7 +6,10 @@ import { z } from "zod";
 // discovery/search path usable without ever shipping an API key to the client.
 export const JUPITER_TOKENS_API = "https://lite-api.jup.ag/tokens/v2";
 export const PUMP_PROGRAM_ADDRESS = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+export const PUMP_AMM_PROGRAM_ADDRESS = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 const TRADE_EVENT_DISCRIMINATOR = Uint8Array.from([189, 219, 127, 211, 78, 230, 97, 238]);
+const AMM_BUY_EVENT_DISCRIMINATOR = Uint8Array.from([103, 244, 82, 31, 44, 245, 119, 119]);
+const AMM_SELL_EVENT_DISCRIMINATOR = Uint8Array.from([62, 47, 55, 10, 165, 3, 220, 42]);
 
 const optionalNumber = z.preprocess(
   (value) => value === null ? undefined : value,
@@ -123,6 +126,42 @@ export interface PumpTrade {
   readonly virtualSolReservesLamports: bigint;
   readonly virtualTokenReservesAtomic: bigint;
   readonly priceSol: number;
+}
+
+const pumpTradeWireSchema = z.object({
+  signature: z.string().min(64).max(128),
+  eventIndex: z.number().int().nonnegative(),
+  slot: z.number().int().nonnegative(),
+  mint: z.string().min(32).max(64),
+  user: z.string().min(32).max(64),
+  side: z.enum(["buy", "sell"]),
+  timestamp: z.number().int().nonnegative(),
+  solAmountLamports: z.string().regex(/^[0-9]+$/),
+  tokenAmountAtomic: z.string().regex(/^[0-9]+$/),
+  feeLamports: z.string().regex(/^[0-9]+$/),
+  creatorFeeLamports: z.string().regex(/^[0-9]+$/),
+  feeBasisPoints: z.number().int().nonnegative(),
+  creatorFeeBasisPoints: z.number().int().nonnegative(),
+  virtualSolReservesLamports: z.string().regex(/^[0-9]+$/),
+  virtualTokenReservesAtomic: z.string().regex(/^[0-9]+$/),
+  priceSol: z.number().finite().positive(),
+});
+
+export function serializePumpTradeHistory(trades: readonly PumpTrade[]): string {
+  return JSON.stringify(trades.slice(0, 160), (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
+}
+
+export function parsePumpTradeHistory(value: unknown): readonly PumpTrade[] {
+  const parsed = z.array(pumpTradeWireSchema).max(160).parse(value);
+  return Object.freeze(parsed.map((trade) => Object.freeze({
+    ...trade,
+    solAmountLamports: BigInt(trade.solAmountLamports),
+    tokenAmountAtomic: BigInt(trade.tokenAmountAtomic),
+    feeLamports: BigInt(trade.feeLamports),
+    creatorFeeLamports: BigInt(trade.creatorFeeLamports),
+    virtualSolReservesLamports: BigInt(trade.virtualSolReservesLamports),
+    virtualTokenReservesAtomic: BigInt(trade.virtualTokenReservesAtomic),
+  })));
 }
 
 function pumpTradeKey(trade: Pick<PumpTrade, "signature" | "eventIndex">): string {
@@ -270,6 +309,74 @@ export function decodePumpTradeLog(
   return normalizePumpTradeEvent({ mint, solAmount, tokenAmount, isBuy, user, timestamp, virtualSolReserves, virtualTokenReserves, feeBasisPoints, fee, creatorFeeBasisPoints, creatorFee }, context);
 }
 
+export function decodePumpAmmTradeLog(
+  log: string,
+  context: { readonly signature: string; readonly eventIndex?: number; readonly slot: number; readonly decimals: number; readonly mint: string },
+): PumpTrade | undefined {
+  if (!log.startsWith("Program data: ")) return undefined;
+  let data: Uint8Array;
+  try {
+    data = Uint8Array.from(getBase64Codec().encode(log.slice("Program data: ".length) as Base64EncodedBytes));
+  } catch {
+    return undefined;
+  }
+  const isBuy = bytesEqual(data.slice(0, 8), AMM_BUY_EVENT_DISCRIMINATOR);
+  const isSell = bytesEqual(data.slice(0, 8), AMM_SELL_EVENT_DISCRIMINATOR);
+  // Both official Pump AMM events share this stable prefix through the coin
+  // creator fee. Later event extensions are deliberately ignored.
+  if (data.length < 360 || (!isBuy && !isSell)) return undefined;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let cursor = 8;
+  const key = () => {
+    const value = getBase58Decoder().decode(data.slice(cursor, cursor + 32));
+    cursor += 32;
+    return value;
+  };
+  const u64 = () => {
+    const value = view.getBigUint64(cursor, true);
+    cursor += 8;
+    return value;
+  };
+  const timestamp = view.getBigInt64(cursor, true);
+  cursor += 8;
+  const tokenAmount = u64(); // base_amount_out (buy) or base_amount_in (sell)
+  u64(); // max_quote_amount_in or min_quote_amount_out
+  u64(); // user_base_token_reserves
+  u64(); // user_quote_token_reserves
+  const poolBaseTokenReserves = u64();
+  const poolQuoteTokenReserves = u64();
+  const solAmount = u64(); // quote_amount_in or quote_amount_out
+  const lpFeeBasisPoints = u64();
+  const lpFee = u64();
+  const protocolFeeBasisPoints = u64();
+  const protocolFee = u64();
+  u64(); // quote amount with/without LP fee
+  u64(); // exact user quote amount
+  key(); // pool
+  const user = key();
+  key(); // user_base_token_account
+  key(); // user_quote_token_account
+  key(); // protocol_fee_recipient
+  key(); // protocol_fee_recipient_token_account
+  key(); // coin_creator
+  const creatorFeeBasisPoints = u64();
+  const creatorFee = u64();
+  return normalizePumpTradeEvent({
+    mint: context.mint,
+    user,
+    solAmount,
+    tokenAmount,
+    isBuy,
+    timestamp,
+    virtualSolReserves: poolQuoteTokenReserves,
+    virtualTokenReserves: poolBaseTokenReserves,
+    feeBasisPoints: lpFeeBasisPoints + protocolFeeBasisPoints,
+    fee: lpFee + protocolFee,
+    creatorFeeBasisPoints,
+    creatorFee,
+  }, context);
+}
+
 const signatureHistorySchema = z.object({
   result: z.array(z.object({ signature: z.string().min(64).max(128), slot: z.number().int().nonnegative(), err: z.unknown().nullable().optional() })).max(160),
   error: z.unknown().optional(),
@@ -334,7 +441,8 @@ export async function fetchPumpTradeHistory(input: {
       if (parsed.error || !parsed.result?.meta?.logMessages) return [];
       return parsed.result.meta.logMessages.flatMap((log, eventIndex) => {
         try {
-          const trade = decodePumpTradeLog(log, { signature: entry.signature, eventIndex, slot: parsed.result!.slot, decimals: input.decimals });
+          const context = { signature: entry.signature, eventIndex, slot: parsed.result!.slot, decimals: input.decimals } as const;
+          const trade = decodePumpTradeLog(log, context) ?? decodePumpAmmTradeLog(log, { ...context, mint: input.mint });
           return trade?.mint === input.mint ? [trade] : [];
         } catch {
           return [];
@@ -346,6 +454,22 @@ export async function fetchPumpTradeHistory(input: {
     }
   }
   return mergePumpTradeHistory([], trades);
+}
+
+export async function fetchPumpTradeHistoryFromApi(input: {
+  readonly mint: string;
+  readonly decimals: number;
+  readonly signal?: AbortSignal;
+  readonly fetcher?: typeof fetch;
+}): Promise<readonly PumpTrade[]> {
+  const response = await (input.fetcher ?? fetch)(`/api/market/pump-history?mint=${encodeURIComponent(input.mint)}&decimals=${input.decimals}`, {
+    method: "GET",
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
+    signal: input.signal,
+  });
+  if (!response.ok) throw new Error(`Pump history API returned HTTP ${response.status}.`);
+  return parsePumpTradeHistory(await response.json());
 }
 
 const logsNotificationSchema = z.object({
@@ -392,10 +516,10 @@ export async function subscribePumpTrades(input: {
       jsonrpc: "2.0",
       id: requestId,
       method: "logsSubscribe",
-      // Pump TradeEvent logs do not reliably include the mint in the outer
-      // transaction account list. Subscribe to the official program, then
-      // apply the decoded mint filter below.
-      params: [{ mentions: [PUMP_PROGRAM_ADDRESS] }, { commitment: "confirmed" }],
+      // The mint is an account in both current bonding-curve and Pump AMM swap
+      // transactions. Filtering it here avoids streaming the entire global
+      // Pump firehose into every browser tab.
+      params: [{ mentions: [input.mint] }, { commitment: "confirmed" }],
     }));
     socket.onmessage = (message) => {
       let payload: unknown;
@@ -424,7 +548,8 @@ export async function subscribePumpTrades(input: {
       if (value.err) return;
       for (const [eventIndex, log] of value.logs.entries()) {
         try {
-          const trade = decodePumpTradeLog(log, { signature: value.signature, eventIndex, slot: context.slot, decimals: input.decimals });
+          const tradeContext = { signature: value.signature, eventIndex, slot: context.slot, decimals: input.decimals } as const;
+          const trade = decodePumpTradeLog(log, tradeContext) ?? decodePumpAmmTradeLog(log, { ...tradeContext, mint: input.mint });
           if (trade?.mint === input.mint) input.onTrade(trade);
         } catch {
           // Ignore non-trade or version-skewed events; the aggregate token API remains live.

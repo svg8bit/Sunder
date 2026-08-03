@@ -45,6 +45,7 @@ import { Badge, Button, EmptyState, Field, Input, Metric, Modal, Panel, Segmente
 import type { EmbeddedWalletBackupMode } from "../components/embedded-wallet-backup";
 import { EmbeddedWalletExport } from "../components/embedded-wallet-export";
 import type { RouteId } from "../components/shell";
+import { stringifySolanaRpcValue } from "../solana/rpc-errors";
 import { useNetwork } from "../state/network";
 import { useSolanaWalletRegistry } from "../state/solana-wallet-registry";
 import { useWorkspace, type WatchWallet } from "../state/workspace";
@@ -362,7 +363,7 @@ export function TrackerScreen() {
         const response = await solana.runtime.rpc.getSignatureStatuses([candidate as never], { searchTransactionHistory: true }).send();
         const status = response.value[0];
         if (!status) { setResult({ state: "missing", detail: "No signature status found on the selected Solana network." }); return; }
-        const detail = status.err ? `Transaction failed: ${JSON.stringify(status.err)}` : `${status.confirmationStatus ?? "processed"} at slot ${status.slot}.`;
+        const detail = status.err ? `Transaction failed: ${stringifySolanaRpcValue(status.err)}` : `${status.confirmationStatus ?? "processed"} at slot ${status.slot}.`;
         setResult({ state: status.err ? "failed" : "found", detail, signature: candidate });
         workspace.record({ category: "system", action: "Tracker queried Solana signature", detail, state: status.err ? "failed" : status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized" ? "confirmed" : "local", network, signature: candidate });
       }
