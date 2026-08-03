@@ -72,7 +72,10 @@ function formatMarketCap(value: number): string {
 }
 
 function showRecentWindow(chart: IChartApi, candleCount: number): void {
-  const visibleBars = candleCount < 12 ? 18 : Math.min(72, Math.max(24, candleCount + 8));
+  // Start where a trading terminal is useful: the latest confirmed action.
+  // Older launch/migration spikes remain one pan away instead of flattening a
+  // crashed token's current candles into a one-pixel line after refresh.
+  const visibleBars = candleCount < 12 ? 18 : 24;
   chart.timeScale().setVisibleLogicalRange({
     from: Math.max(-6, candleCount - visibleBars),
     to: candleCount + 3,
@@ -155,7 +158,15 @@ export function LiveCandlestickChart({ instrumentId, observations, trades, symbo
         },
         grid: { vertLines: { color: "#1a2026" }, horzLines: { color: "#1a2026" } },
         crosshair: { vertLine: { color: "#57616b", labelBackgroundColor: "#20262d" }, horzLine: { color: "#57616b", labelBackgroundColor: "#20262d" } },
-        rightPriceScale: { autoScale: true, borderColor: "#232a31", minimumWidth: 72, scaleMargins: { top: 0.12, bottom: 0.18 } },
+        rightPriceScale: {
+          autoScale: true,
+          borderColor: "#232a31",
+          minimumWidth: 72,
+          // A percentage margin below a wide MCap range can manufacture
+          // negative axis labels. Volume has its own overlay scale, so MCap
+          // can safely use the real observed floor.
+          scaleMargins: { top: 0.12, bottom: metric === "market-cap" ? 0 : 0.18 },
+        },
         timeScale: { borderColor: "#232a31", timeVisible: true, secondsVisible: interval < 60, rightOffset: 3, barSpacing: 10, minBarSpacing: 4 },
         handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
         handleScroll: { horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true, vertTouchDrag: false },
