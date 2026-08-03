@@ -1,8 +1,9 @@
 // @vitest-environment node
 
 import { describe, expect, it, vi } from "vitest";
-import { PublicKey, SystemProgram, Transaction, type Connection } from "@solana/web3.js";
-import { PumpTransactionAdapter } from "../packages/chain-solana/src/index.js";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { Keypair, PublicKey, SystemProgram, Transaction, type AccountInfo, type Connection } from "@solana/web3.js";
+import { PumpTransactionAdapter, resolvePumpTokenProgram } from "../packages/chain-solana/src/index.js";
 import {
   SolanaConfirmationAdapter,
   type ConfirmationRpc,
@@ -83,5 +84,33 @@ describe("Pump transaction simulation", () => {
       unsignedPayload: unsigned,
     };
     await expect(adapter.simulate(draft)).resolves.toMatchObject({ ok: true, estimatedFeeAtomic: 5_250n, unitsConsumed: 42_000n });
+  });
+});
+
+describe("Pump token-program resolution", () => {
+  const mint = Keypair.generate().publicKey;
+  const account = (owner: PublicKey): AccountInfo<Buffer> => ({
+    data: Buffer.alloc(0),
+    executable: false,
+    lamports: 1,
+    owner,
+    rentEpoch: 0,
+  });
+
+  it.each([
+    ["legacy Token Program", TOKEN_PROGRAM_ID],
+    ["Token-2022", TOKEN_2022_PROGRAM_ID],
+  ])("uses the actual mint owner for %s Pump tokens", async (_label, owner) => {
+    const connection = { getAccountInfo: vi.fn(async () => account(owner)) } as unknown as Pick<Connection, "getAccountInfo">;
+    await expect(resolvePumpTokenProgram(connection, mint)).resolves.toEqual(owner);
+  });
+
+  it("rejects missing and non-token mint accounts before a transaction is signed", async () => {
+    const missing = { getAccountInfo: vi.fn(async () => null) } as unknown as Pick<Connection, "getAccountInfo">;
+    await expect(resolvePumpTokenProgram(missing, mint)).rejects.toThrow(/mint account not found/i);
+
+    const unsupportedOwner = Keypair.generate().publicKey;
+    const unsupported = { getAccountInfo: vi.fn(async () => account(unsupportedOwner)) } as unknown as Pick<Connection, "getAccountInfo">;
+    await expect(resolvePumpTokenProgram(unsupported, mint)).rejects.toThrow(/unsupported token program/i);
   });
 });

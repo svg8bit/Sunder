@@ -5,7 +5,7 @@ import {
   PUMP_PROGRAM_ID,
   PumpSdk,
 } from "@pump-fun/pump-sdk";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import {
   ComputeBudgetProgram,
   Connection,
@@ -81,6 +81,18 @@ async function withAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promis
     signal.addEventListener("abort", onAbort, { once: true });
     void operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
+}
+
+export async function resolvePumpTokenProgram(
+  connection: Pick<Connection, "getAccountInfo">,
+  mint: PublicKey,
+  signal?: AbortSignal,
+): Promise<PublicKey> {
+  const account = await withAbort(connection.getAccountInfo(mint, "confirmed"), signal);
+  if (!account) throw new Error(`Pump mint account not found: ${mint.toBase58()}.`);
+  if (account.owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;
+  if (account.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
+  throw new Error(`Pump mint ${mint.toBase58()} is owned by unsupported token program ${account.owner.toBase58()}.`);
 }
 
 export class PumpQuoteAdapter implements QuoteAdapter {
@@ -173,10 +185,11 @@ export class PumpTransactionAdapter implements TransactionAdapter {
     if (input.feePolicy.kind !== "solana") throw new Error("PumpTransactionAdapter requires a Solana fee policy.");
     const mint = requirePublicKey(input.event.target ?? input.event.mint, "Pump mint");
     const user = requirePublicKey(input.event.account, "Wallet address");
-    const [global, buyState] = await withAbort(Promise.all([
+    const [global, tokenProgram] = await withAbort(Promise.all([
       this.#onlineSdk.fetchGlobal(),
-      this.#onlineSdk.fetchBuyState(mint, user, TOKEN_PROGRAM_ID),
+      resolvePumpTokenProgram(this.#connection, mint, signal),
     ]), signal);
+    const buyState = await withAbort(this.#onlineSdk.fetchBuyState(mint, user, tokenProgram), signal);
     const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = buyState;
     const tokenAmount = new BN(input.quote.expectedOutputAmount.toString());
     const solAmount = new BN(input.quote.inputAmountAtomic.toString());
@@ -193,7 +206,7 @@ export class PumpTransactionAdapter implements TransactionAdapter {
       amount: tokenAmount,
       solAmount,
       slippage,
-      tokenProgram: TOKEN_PROGRAM_ID,
+      tokenProgram,
     });
     const feeInstructions: TransactionInstruction[] = [
       ComputeBudgetProgram.setComputeUnitLimit({ units: input.feePolicy.computeUnitLimit }),
