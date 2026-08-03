@@ -7,6 +7,7 @@ import {
   BarChart3,
   CheckCircle2,
   Copy,
+  Download,
   ExternalLink,
   Eye,
   History,
@@ -22,15 +23,17 @@ import {
   Settings2,
   ShieldCheck,
   Trash2,
+  Upload,
   Users,
   WalletCards,
   Wifi,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Badge, Button, EmptyState, Field, Input, Panel, Segmented, Select, Toggle } from "../components/ui";
 import { FloatingPanel, resetTerminalPanelLayout } from "../components/floating-panel";
+import type { EmbeddedWalletBackupMode } from "../components/embedded-wallet-backup";
 import { EmbeddedWalletExport } from "../components/embedded-wallet-export";
 import { LiveCandlestickChart, type CandleInterval } from "../components/live-candlestick-chart";
 import { applyPercentageBps, formatAtomicAmount, parseDecimalAmount } from "../solana/amounts";
@@ -60,6 +63,8 @@ type QuotePhase = "idle" | "quoting" | "ready" | "awaiting-signature" | "signed"
 type PricePoint = { readonly at: number; readonly price: number };
 type PreparedWalletSwap = { readonly walletId: string; readonly connectorName: string; readonly wallet: WalletSession; readonly prepared: PreparedJupiterSwap };
 type ConfirmedWalletSwap = { readonly walletId: string; readonly connectorName: string; readonly receipt: ConfirmedSwapReceipt };
+
+const EmbeddedWalletBackup = lazy(() => import("../components/embedded-wallet-backup").then((module) => ({ default: module.EmbeddedWalletBackup })));
 
 function shorten(value: string, left = 5, right = 4): string {
   return value.length <= left + right + 1 ? value : `${value.slice(0, left)}…${value.slice(-right)}`;
@@ -223,6 +228,7 @@ export function TradingTerminalScreen() {
   const [showWatchOnly, setShowWatchOnly] = useState(true);
   const [walletTab, setWalletTab] = useState<"wallets" | "history">("wallets");
   const [exportWalletId, setExportWalletId] = useState<string>();
+  const [walletBackupMode, setWalletBackupMode] = useState<EmbeddedWalletBackupMode>();
   const [selectedWalletIds, setSelectedWalletIds] = useState<readonly string[]>(() => {
     try {
       const parsed = JSON.parse(window.localStorage.getItem(SOLANA_SIGNER_SELECTION_STORAGE_KEY) ?? "[]");
@@ -384,6 +390,7 @@ export function TradingTerminalScreen() {
   }), [filter, tokens]);
 
   const selectedSigners = useMemo(() => walletRegistry.wallets.filter((candidate) => selectedWalletIds.includes(candidate.id)), [selectedWalletIds, walletRegistry.wallets]);
+  const embeddedWalletCount = walletRegistry.wallets.filter((candidate) => candidate.kind === "embedded").length;
   const selectedSignerAddresses = useMemo(() => new Set(selectedSigners.map((candidate) => candidate.session.account.address.toString())), [selectedSigners]);
   const visibleWallets = useMemo(() => networkWallets.filter((candidate) => {
     const query = walletSearch.trim().toLowerCase();
@@ -732,7 +739,9 @@ export function TradingTerminalScreen() {
                 <label><Search size={13} /><input value={walletSearch} onChange={(event) => setWalletSearch(event.target.value)} placeholder="Name or address" /></label>
                 <button type="button" className={showWatchOnly ? "is-active" : ""} onClick={() => setShowWatchOnly((value) => !value)} title="Show watch-only wallets"><Eye size={14} /></button>
                 <button type="button" disabled={walletRegistry.creatingEmbeddedWallet} onClick={() => void createSignerWallet()}>{walletRegistry.creatingEmbeddedWallet ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />} Create wallet</button>
-                <button type="button" onClick={openWalletInventory}><Settings2 size={14} /></button>
+                <button type="button" disabled={embeddedWalletCount === 0} onClick={() => setWalletBackupMode("backup")} title="Download encrypted wallet backup" aria-label="Download encrypted wallet backup"><Download size={14} /></button>
+                <button type="button" onClick={() => setWalletBackupMode("restore")} title="Restore encrypted wallet backup" aria-label="Restore encrypted wallet backup"><Upload size={14} /></button>
+                <button type="button" onClick={openWalletInventory} title="Wallet settings" aria-label="Open wallet settings"><Settings2 size={14} /></button>
               </div>
               <div className="terminal-wallet-table">
                 <div className="terminal-wallet-table__head"><input type="checkbox" checked={allDisplayedSelected} onChange={toggleAllDisplayed} aria-label="Select all displayed wallets" /><span>Wallet</span><span>Balance</span><span>Holdings</span><span>Actions</span></div>
@@ -757,7 +766,7 @@ export function TradingTerminalScreen() {
                 </div>)}
                 {walletRegistry.wallets.length === 0 && visibleWallets.length === 0 ? <div className="terminal-wallet-empty"><WalletCards size={18} /><span>No signer yet. Create one locally or connect Phantom from the header.</span></div> : null}
               </div>
-              <p className="terminal-wallet-safety"><ShieldCheck size={13} /> Trades fan out only to selected signers. Embedded keys are AES-GCM encrypted in this browser; export a backup before clearing site data.</p>
+              <p className="terminal-wallet-safety"><ShieldCheck size={13} /> Trades fan out only to selected signers. Embedded keys are device-local and AES-GCM encrypted; use the encrypted vault backup before clearing site data.</p>
               <div className="terminal-pnl">
                 <div><span>Confirmed net SOL flow</span><strong className={(position?.confirmedNetSolFlowLamports ?? 0n) >= 0n ? "is-positive" : "is-negative"}>{position ? formatSol(position.confirmedNetSolFlowLamports) : "—"}</strong></div>
                 <div><span>Realized net PnL</span><strong className={(position?.realizedNetPnlLamports ?? 0n) >= 0n ? "is-positive" : "is-negative"}>{position ? formatSol(position.realizedNetPnlLamports) : "—"}</strong></div>
@@ -778,6 +787,7 @@ export function TradingTerminalScreen() {
         </FloatingPanel>
       </div>
       <EmbeddedWalletExport wallet={exportWallet} open={Boolean(exportWallet)} onOpenChange={(nextOpen) => { if (!nextOpen) setExportWalletId(undefined); }} />
+      {walletBackupMode ? <Suspense fallback={null}><EmbeddedWalletBackup mode={walletBackupMode} open onOpenChange={(nextOpen) => { if (!nextOpen) setWalletBackupMode(undefined); }} /></Suspense> : null}
     </div>
   );
 }

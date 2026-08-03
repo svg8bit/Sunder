@@ -7,6 +7,7 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
+  Download,
   ExternalLink,
   Eye,
   FileClock,
@@ -29,10 +30,11 @@ import {
   Timer,
   Trash2,
   Trophy,
+  Upload,
   WalletCards,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { isAddress, isHex, TransactionReceiptNotFoundError, type Hex } from "viem";
 import { usePublicClient } from "wagmi";
@@ -40,12 +42,15 @@ import { mainnet, sepolia } from "wagmi/chains";
 import { PublicKey } from "@solana/web3.js";
 import safeRegex from "safe-regex2";
 import { Badge, Button, EmptyState, Field, Input, Metric, Modal, Panel, Segmented, Select, Toggle } from "../components/ui";
+import type { EmbeddedWalletBackupMode } from "../components/embedded-wallet-backup";
 import { EmbeddedWalletExport } from "../components/embedded-wallet-export";
 import type { RouteId } from "../components/shell";
 import { useNetwork } from "../state/network";
 import { useSolanaWalletRegistry } from "../state/solana-wallet-registry";
 import { useWorkspace, type WatchWallet } from "../state/workspace";
 import { openWalletControl } from "../wallets/control-event";
+
+const EmbeddedWalletBackup = lazy(() => import("../components/embedded-wallet-backup").then((module) => ({ default: module.EmbeddedWalletBackup })));
 
 function ScreenHeading({ eyebrow, title, description, actions }: { readonly eyebrow: string; readonly title: string; readonly description: string; readonly actions?: React.ReactNode }) {
   return <div className="screen-heading"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{description}</p></div>{actions ? <div className="heading-actions">{actions}</div> : null}</div>;
@@ -65,6 +70,7 @@ function formatSolBalance(lamports: bigint | undefined): string {
 export function DashboardScreen({ navigate }: { readonly navigate: (route: RouteId) => void }) {
   const { chain, network, family } = useNetwork();
   const { projects, wallets, audit } = useWorkspace();
+  const operatorExecutorProvisioned = family === "solana" && Boolean(import.meta.env.VITE_SOLANA_EXECUTOR_PUBLIC_ADDRESS?.trim());
   const confirmedProjects = projects.filter((project) => project.status === "Confirmed" && project.network === network);
   const chainWallets = wallets.filter((wallet) => wallet.network === network);
   return (
@@ -73,7 +79,7 @@ export function DashboardScreen({ navigate }: { readonly navigate: (route: Route
       <div className="dashboard-metrics">
         <Metric label="Confirmed launches" value={confirmedProjects.length} detail="RPC-verified only" />
         <Metric label={`Connected ${chain.nativeSymbol} balance`} value="—" detail="Connect wallet to load" />
-        <Metric label="Executor readiness" value="Locked" detail="No signer policy" tone="warn" />
+        <Metric label="Executor boundary" value={operatorExecutorProvisioned ? "External" : "Locked"} detail={operatorExecutorProvisioned ? "Isolated operator runtime" : "No signer policy"} tone="warn" />
         <Metric label="Relay confirmations" value={audit.filter((entry) => entry.state === "confirmed" && entry.network === network).length} detail="Current session" />
       </div>
       <div className="dashboard-grid">
@@ -86,7 +92,7 @@ export function DashboardScreen({ navigate }: { readonly navigate: (route: Route
           {projects.length === 0 ? <EmptyState icon={<Boxes size={22} />} title="No projects yet" description="Validated manifests appear here as local drafts; only receipts can promote them to Confirmed." /> : <div className="project-list">{projects.slice(0, 6).map((project) => <button type="button" key={project.id} onClick={() => navigate("projects")}><span className="project-avatar">{project.symbol.slice(0, 2)}</span><span><strong>{project.name}</strong><small>{project.status} · {project.launchMode}</small></span><Badge tone={project.status === "Confirmed" ? "good" : project.status === "Locked" ? "warn" : "neutral"}>{project.network.replace(/^[^:]+:/, "")}</Badge></button>)}</div>}
         </Panel>
         <Panel title="Readiness matrix" className="dashboard-readiness">
-          <div className="readiness-table compact"><div><span>Browser wallet</span><Badge tone="warn">Connect required</Badge></div><div><span>Public RPC</span><Badge tone="good">Configured</Badge></div><div><span>Persistent executor</span><Badge tone="warn">Unavailable on Vercel</Badge></div><div><span>Mainnet signer</span><Badge tone="warn">Locked</Badge></div><div><span>Watch-only wallets</span><Badge tone={chainWallets.length ? "good" : "neutral"}>{chainWallets.length}</Badge></div></div>
+          <div className="readiness-table compact"><div><span>Browser wallet</span><Badge tone="warn">Connect required</Badge></div><div><span>Public RPC</span><Badge tone="good">Configured</Badge></div><div><span>Persistent executor</span><Badge tone={operatorExecutorProvisioned ? "good" : "warn"}>{operatorExecutorProvisioned ? "Isolated service" : "Unavailable on Vercel"}</Badge></div><div><span>Mainnet signer</span><Badge tone="warn">Runtime-gated</Badge></div><div><span>Watch-only wallets</span><Badge tone={chainWallets.length ? "good" : "neutral"}>{chainWallets.length}</Badge></div></div>
         </Panel>
       </div>
     </div>
@@ -127,6 +133,7 @@ export function WalletsScreen() {
   const [address, setAddress] = useState("");
   const [role, setRole] = useState<WatchWallet["role"]>("Watch only");
   const [exportWalletId, setExportWalletId] = useState<string>();
+  const [walletBackupMode, setWalletBackupMode] = useState<EmbeddedWalletBackupMode>();
   const visible = workspace.wallets.filter((wallet) => wallet.network === network);
   const [signerBalances, setSignerBalances] = useState<Readonly<Record<string, bigint>>>({});
   const signerKey = signerRegistry.wallets.map((entry) => `${entry.id}:${entry.session.account.address.toString()}`).join("|");
@@ -177,10 +184,11 @@ export function WalletsScreen() {
     }
   };
   const exportWallet = signerRegistry.wallets.find((entry) => entry.id === exportWalletId && entry.kind === "embedded");
+  const embeddedWalletCount = signerRegistry.wallets.filter((entry) => entry.kind === "embedded").length;
   return (
     <div className="screen">
-      <ScreenHeading eyebrow="Self-custody inventory" title="Wallets" description="Create encrypted browser-local Solana wallets or connect a Wallet Standard provider; balances and public history persist in this browser." actions={<><Button onClick={() => setOpen(true)}><Eye size={16} /> Add watch address</Button><Button variant="primary" disabled={signerRegistry.creatingEmbeddedWallet} onClick={() => void createSignerWallet()}>{signerRegistry.creatingEmbeddedWallet ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />} Create wallet</Button></>} />
-      <div className="custody-banner"><ShieldCheck size={22} /><div><strong>Self-custody, two signer boundaries</strong><span>Provider wallets sign in Phantom/Solflare/Backpack. Embedded wallets are generated client-side and AES-GCM encrypted in IndexedDB; export a backup before clearing site data.</span></div><Badge tone="good">No server custody</Badge></div>
+      <ScreenHeading eyebrow="Self-custody inventory" title="Wallets" description="Create encrypted browser-local Solana wallets or connect a Wallet Standard provider; balances and public history persist in this browser." actions={<><Button onClick={() => setOpen(true)}><Eye size={16} /> Add watch address</Button>{family === "solana" ? <><Button disabled={embeddedWalletCount === 0} onClick={() => setWalletBackupMode("backup")}><Download size={16} /> Backup</Button><Button onClick={() => setWalletBackupMode("restore")}><Upload size={16} /> Restore</Button></> : null}<Button variant="primary" disabled={signerRegistry.creatingEmbeddedWallet} onClick={() => void createSignerWallet()}>{signerRegistry.creatingEmbeddedWallet ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />} Create wallet</Button></>} />
+      <div className="custody-banner"><ShieldCheck size={22} /><div><strong>Self-custody, two signer boundaries</strong><span>Provider wallets sign in Phantom/Solflare/Backpack. Embedded wallets are generated client-side and AES-GCM encrypted in IndexedDB; the passphrase-encrypted vault backup survives browser-data loss.</span></div><Badge tone="good">No server custody</Badge></div>
       <Panel title={`${chain.name} connected signers`} action={<Badge tone={family === "solana" && signerRegistry.wallets.length > 0 ? "good" : "neutral"}>{family === "solana" ? signerRegistry.wallets.length : 0} linked</Badge>}>
         {family !== "solana" ? <EmptyState icon={<WalletCards size={24} />} title="EVM signer uses the header wallet" description="Switch to SOL to create a browser-local Solana signer, or connect the current EVM wallet from the header." /> : signerRegistry.wallets.length === 0 ? <EmptyState icon={<WalletCards size={24} />} title="No signing wallet linked" description="Create a wallet instantly in this browser. It appears here, is selected in the terminal and its confirmed SOL balance refreshes every 10 seconds." action={<Button variant="primary" disabled={signerRegistry.creatingEmbeddedWallet} onClick={() => void createSignerWallet()}><Plus size={15} /> Create wallet</Button>} /> : <div className="wallet-table">{signerRegistry.wallets.map((entry) => {
           const signerAddress = entry.session.account.address.toString();
@@ -199,6 +207,7 @@ export function WalletsScreen() {
         <div className="stack"><Field label="Label"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Treasury watch" /></Field><Field label={`${chain.name} public address`} hint="Public address only"><Input value={address} onChange={(event) => setAddress(event.target.value)} autoComplete="off" /></Field><Field label="Role"><Select value={role} onChange={(event) => setRole(event.target.value as WatchWallet["role"])}><option>Developer</option><option>Bundle</option><option>Sniper</option><option>Task</option><option>Watch only</option></Select></Field><div className="modal__actions"><Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button><Button variant="primary" onClick={add}>Add address</Button></div></div>
       </Modal>
       <EmbeddedWalletExport wallet={exportWallet} open={Boolean(exportWallet)} onOpenChange={(nextOpen) => { if (!nextOpen) setExportWalletId(undefined); }} />
+      {walletBackupMode ? <Suspense fallback={null}><EmbeddedWalletBackup mode={walletBackupMode} open onOpenChange={(nextOpen) => { if (!nextOpen) setWalletBackupMode(undefined); }} /></Suspense> : null}
     </div>
   );
 }
@@ -371,5 +380,5 @@ export function SettingsScreen() {
 }
 
 export function DocsScreen() {
-  return <div className="screen docs-screen"><ScreenHeading eyebrow="Product runbook" title="Docs" description="Architecture, execution invariants, safe operating boundaries and network readiness." /><div className="docs-layout"><aside className="docs-toc"><a href="#architecture">Architecture</a><a href="#networks">Networks</a><a href="#wallets">Wallets</a><a href="#confirmation">Confirmation</a><a href="#readiness">Readiness</a><a href="#boundaries">Boundaries</a></aside><article className="docs-content"><section id="architecture"><h2>Chain-agnostic Sniper Engine</h2><p>The low-latency process normalizes events and runs a shared deterministic risk/retry/audit core. Chain adapters own quotes, transaction construction, relays, signing and confirmation semantics.</p><div className="docs-pipeline">EventSource <ChevronRight /> RuleEvaluator <ChevronRight /> QuoteAdapter <ChevronRight /> TransactionAdapter <ChevronRight /> Simulator <ChevronRight /> WalletAdapter <ChevronRight /> RelayRouter <ChevronRight /> ConfirmationAdapter</div></section><section id="networks"><h2>Production and verification networks</h2><div className="docs-grid"><Panel title="Solana"><p><strong>Mainnet:</strong> live pool discovery and direct zero-Sunder-fee Jupiter swaps with explicit selected-signer approval; persistent automation locked.</p><p><strong>Devnet:</strong> Wallet Standard self-transfer verification, Pump program boundary, standard RPC/Jito/Nozomi/0slot adapters.</p></Panel><Panel title="Ethereum / EVM"><p><strong>Mainnet:</strong> production mode, funded execution locked.</p><p><strong>Sepolia:</strong> EIP-1193 self-transfer verification, EIP-1559 simulation/replacement, receipt/reorg tracking, standard RPC/Flashbots adapters.</p></Panel></div></section><section id="wallets"><h2>Self-custody</h2><p>The web console never accepts a pasted private key or seed phrase. Solana supports Wallet Standard plus embedded signers generated and AES-GCM encrypted in this browser; explicit export is available for backup. EVM uses EIP-1193. Persistent automation uses a separate policy-limited signer over a Unix socket.</p></section><section id="confirmation"><h2>No success before chain confirmation</h2><p>A relay can return HTTP 200, an RPC can return a transaction hash, and a factory can predict an address while the transaction still fails to land. Sunder records those as submitted only. Success requires a canonical Solana signature status or EVM receipt at the configured depth; reorged, expired and reverted states fail.</p></section><section id="readiness"><h2>Production readiness matrix</h2><div className="matrix"><div className="matrix__head"><span>Capability</span><span>Solana Mainnet</span><span>Ethereum Mainnet</span><span>Test networks</span></div>{[["UI + selectors", "Implemented", "Implemented", "Implemented"],["Browser wallet", "Wallet Standard + local", "EIP-1193 / wagmi", "Executable"],["Quote / transaction", "Direct Jupiter + Pump", "Uniswap V2/V3/V4 auto-routing", "Mock/RPC tested"],["Relays", "RPC/Jito/Nozomi/0slot", "RPC/Flashbots", "Config aware"],["Persistent executor", "Locked", "Locked", "Signer required"],["On-chain verification", "Required", "Required", "Executable from wallet modal"]].map((row) => <div key={row[0]}>{row.map((value, index) => <span key={`${index}:${value}`}><Badge tone={value === "Locked" ? "warn" : index === 0 ? "neutral" : "good"}>{value}</Badge></span>)}</div>)}</div></section><section id="boundaries"><h2>Explicitly excluded</h2><p>No fake volume, candle painting, wash trading, mixer/evasion, aged-wallet marketplace, fabricated holders, or invented deploy history. Safe replacements are scheduled DCA, rebalancing, transparent distribution, deterministic strategy simulation, load testing and honest analytics.</p></section></article></div></div>;
+  return <div className="screen docs-screen"><ScreenHeading eyebrow="Product runbook" title="Docs" description="Architecture, execution invariants, safe operating boundaries and network readiness." /><div className="docs-layout"><aside className="docs-toc"><a href="#architecture">Architecture</a><a href="#networks">Networks</a><a href="#wallets">Wallets</a><a href="#confirmation">Confirmation</a><a href="#readiness">Readiness</a><a href="#boundaries">Boundaries</a></aside><article className="docs-content"><section id="architecture"><h2>Chain-agnostic Sniper Engine</h2><p>The low-latency process normalizes events and runs a shared deterministic risk/retry/audit core. Chain adapters own quotes, transaction construction, relays, signing and confirmation semantics.</p><div className="docs-pipeline">EventSource <ChevronRight /> RuleEvaluator <ChevronRight /> QuoteAdapter <ChevronRight /> TransactionAdapter <ChevronRight /> Simulator <ChevronRight /> WalletAdapter <ChevronRight /> RelayRouter <ChevronRight /> ConfirmationAdapter</div></section><section id="networks"><h2>Production and verification networks</h2><div className="docs-grid"><Panel title="Solana"><p><strong>Mainnet:</strong> live pool discovery and one-click zero-Sunder-fee Jupiter swaps; persistent execution runs only in a separately gated operator service and Vercel does not hold its signer.</p><p><strong>Devnet:</strong> Wallet Standard self-transfer verification, Pump program boundary, standard RPC/Jito/Nozomi/0slot adapters.</p></Panel><Panel title="Ethereum / EVM"><p><strong>Mainnet:</strong> production mode, funded execution locked.</p><p><strong>Sepolia:</strong> EIP-1193 self-transfer verification, EIP-1559 simulation/replacement, receipt/reorg tracking, standard RPC/Flashbots adapters.</p></Panel></div></section><section id="wallets"><h2>Self-custody</h2><p>The web console never accepts a pasted private key or seed phrase. Solana supports Wallet Standard plus embedded signers generated and AES-GCM encrypted in this browser; the entire vault has PBKDF2-SHA256 + AES-256-GCM passphrase-encrypted backup/restore. EVM uses EIP-1193. Persistent automation uses a separate policy-limited signer over a Unix socket.</p></section><section id="confirmation"><h2>No success before chain confirmation</h2><p>A relay can return HTTP 200, an RPC can return a transaction hash, and a factory can predict an address while the transaction still fails to land. Sunder records those as submitted only. Success requires a canonical Solana signature status or EVM receipt at the configured depth; reorged, expired and reverted states fail.</p></section><section id="readiness"><h2>Production readiness matrix</h2><div className="matrix"><div className="matrix__head"><span>Capability</span><span>Solana Mainnet</span><span>Ethereum Mainnet</span><span>Test networks</span></div>{[["UI + selectors", "Implemented", "Implemented", "Implemented"],["Browser wallet", "Wallet Standard + encrypted local", "EIP-1193 / wagmi", "Executable"],["Quote / transaction", "Direct Jupiter + Pump", "Uniswap V2/V3/V4 auto-routing", "Mock/RPC tested"],["Relays", "RPC/Jito/Nozomi/0slot", "RPC/Flashbots", "Config aware"],["Persistent executor", "Runtime-gated", "Locked", "Signer required"],["On-chain verification", "Required", "Required", "Executable from wallet modal"]].map((row) => <div key={row[0]}>{row.map((value, index) => <span key={`${index}:${value}`}><Badge tone={value === "Locked" || value === "Runtime-gated" ? "warn" : index === 0 ? "neutral" : "good"}>{value}</Badge></span>)}</div>)}</div></section><section id="boundaries"><h2>Explicitly excluded</h2><p>No fake volume, candle painting, wash trading, mixer/evasion, aged-wallet marketplace, fabricated holders, or invented deploy history. Safe replacements are scheduled DCA, rebalancing, transparent distribution, deterministic strategy simulation, load testing and honest analytics.</p></section></article></div></div>;
 }

@@ -9,6 +9,7 @@
 - Same-input side-by-side wallet comparison: `artifacts/qa/terminal-wallet-embedded-side-by-side-final.png` (`1600 x 700`).
 - Corrected chart evidence: `artifacts/qa/terminal-chart-reserve-mcap-final.png` (`617 x 453`).
 - Export warning state: `artifacts/qa/terminal-wallet-export-warning-final.png` (`1280 x 633`); no private key is visible in the artifact.
+- Passphrase-encrypted vault recovery: `artifacts/qa/terminal-wallet-backup-desktop.png` and `artifacts/qa/wallet-encrypted-backup-mobile-final.png`; neither artifact contains key material or a passphrase.
 - Mobile wallet implementation: `artifacts/qa/terminal-wallet-embedded-mobile-final.png` (`390 x 844`) captured at DPR 1.
 - Current Mainnet terminal: `artifacts/qa/terminal-desktop-reset.png` (`1920 x 900`) and `artifacts/qa/terminal-mobile-local.png` (`390 x 844`, full page).
 - Current Mainnet Sniper: `artifacts/qa/sniper-mobile-local.png` (`390 x 844`, full page).
@@ -60,6 +61,14 @@ There are no remaining actionable P0, P1 or P2 findings.
 - Sub-$100K market-cap ticks now retain enough precision (for example `$2,065`, `$2,070`) instead of repeating an indistinguishable `$2.07K` label on every grid line. Evidence: `artifacts/qa/terminal-chart-scale-mainnet-final.png`.
 - The production purchase failure was reproduced without spending funds: the free RPC returned its current slot from `getBlockHeight`, while a fresh Jupiter manifest carried a lower but valid `lastValidBlockHeight`. The same RPC returned `isBlockhashValid=true`. Execution now checks the exact blockhash with `isBlockhashValid`, automatically rebuilds once before signing if it expired, and exposes one Buy/Sell action button for the full build → simulate → sign → submit → canonical confirmation flow.
 
+### Iteration 5 — recoverable wallets and armed executor truthfulness passed
+
+- The Wallets panel now exports every embedded signer into one PBKDF2-SHA256 (600,000 iterations) + AES-256-GCM passphrase-encrypted JSON backup and restores it under the destination browser's non-extractable device key. The backup module is lazy-loaded and adds no work to initial terminal rendering.
+- Unit evidence proves the serialized backup does not contain the matching Base58 private key, a wrong passphrase is rejected, restore returns the original public address and the restored key signs again. Backup/restore actions add public-only local History entries.
+- The browser QA created and auto-selected `Sunder Wallet 1`, observed the single `Buy HGOAT · 1` action, opened the backup flow on desktop and mobile, and measured `innerWidth = clientWidth = scrollWidth = 390` on mobile. The final mobile dialog bounds were `x=11.7`, `width=366.6` and remained inside the viewport.
+- Static production copy now distinguishes an externally armed one-shot acceptance policy from live runtime health. The isolated runtime separately returned `/health` and `/ready` HTTP 200 with all 14 gates ready; the Pump event source was running, unrelated launches were skipped and no funded success is claimed before canonical confirmation.
+- Full verification after these changes: 100 unit/integration tests passed, 6 Sites/security tests passed, Playwright reported 11 passed and 3 viewport-specific skips, and the production build emitted a separate `4.15 kB` (`1.74 kB` gzip) wallet-backup chunk.
+
 ## Interaction and browser evidence
 
 - Browser: `agent-browser` against the loopback Vite application.
@@ -81,6 +90,6 @@ The focused side-by-side comparison shows the required Axiom anatomy: tab strip,
 
 - Sunder does not reproduce Axiom branding, server custody, private-key import, proprietary historical indexer or unrelated navigation.
 - Axiom's proprietary historical indexer is deeper than the bounded public-RPC backfill. Sunder intentionally caps each token selection at 48 confirmed transaction fetches and caches the result to preserve free-provider limits; a project-scoped indexer can extend depth without changing the chart model.
-- Embedded wallets persist only in the current browser profile. Users must export a backup before clearing site data; no cross-device account backend is claimed.
+- Embedded wallets persist only in the current browser profile, with explicit encrypted offline backup/restore. Automatic account-synced cross-device custody is not claimed.
 
 final result: passed

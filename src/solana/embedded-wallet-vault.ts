@@ -13,6 +13,10 @@ const DATABASE_NAME = "sunder-solana-embedded-vault";
 const STORE_NAME = "vault";
 const DEVICE_KEY_ID = "device-key:v1";
 const MAX_WALLETS = 50;
+const BACKUP_SCHEMA = "sunder-solana-embedded-vault-backup";
+const BACKUP_VERSION = 1;
+const BACKUP_KDF_ITERATIONS = 600_000;
+const MAX_BACKUP_BYTES = 256_000;
 const textEncoder = new TextEncoder();
 
 interface StoredDeviceKey {
@@ -31,6 +35,29 @@ interface StoredEmbeddedWallet {
   readonly createdAt: number;
   readonly iv: Uint8Array;
   readonly ciphertext: ArrayBuffer;
+}
+
+interface EncryptedBackupWallet {
+  readonly id: string;
+  readonly label: string;
+  readonly address: string;
+  readonly publicKey: string;
+  readonly createdAt: number;
+  readonly iv: string;
+  readonly ciphertext: string;
+}
+
+interface EmbeddedWalletBackup {
+  readonly schema: typeof BACKUP_SCHEMA;
+  readonly version: typeof BACKUP_VERSION;
+  readonly createdAt: string;
+  readonly kdf: {
+    readonly name: "PBKDF2";
+    readonly hash: "SHA-256";
+    readonly iterations: typeof BACKUP_KDF_ITERATIONS;
+    readonly salt: string;
+  };
+  readonly wallets: readonly EncryptedBackupWallet[];
 }
 
 export interface EmbeddedWalletMetadata {
@@ -100,6 +127,21 @@ async function writeStored(value: StoredDeviceKey | StoredEmbeddedWallet): Promi
   await completed;
 }
 
+async function writeStoredWallets(values: readonly StoredEmbeddedWallet[]): Promise<void> {
+  if (values.length === 0) return;
+  const database = await openDatabase();
+  const transaction = database.transaction(STORE_NAME, "readwrite");
+  const completed = transactionCompletion(transaction);
+  try {
+    for (const value of values) transaction.objectStore(STORE_NAME).put(value);
+  } catch (error) {
+    transaction.abort();
+    await completed.catch(() => undefined);
+    throw error;
+  }
+  await completed;
+}
+
 async function deleteStored(id: string): Promise<void> {
   const database = await openDatabase();
   const transaction = database.transaction(STORE_NAME, "readwrite");
@@ -154,6 +196,76 @@ function metadata(record: StoredEmbeddedWallet): EmbeddedWalletMetadata {
   return Object.freeze({ id: record.id, label: record.label, address: record.address, publicKey: Uint8Array.from(record.publicKey), createdAt: record.createdAt });
 }
 
+function encodeBase64(value: Uint8Array | ArrayBuffer): string {
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeBase64(value: unknown, expectedLength: number): Uint8Array<ArrayBuffer> {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
+    throw new Error("The encrypted wallet backup contains invalid binary data.");
+  }
+  let binary: string;
+  try {
+    binary = atob(value);
+  } catch {
+    throw new Error("The encrypted wallet backup contains invalid binary data.");
+  }
+  if (binary.length !== expectedLength) throw new Error("The encrypted wallet backup contains invalid binary data.");
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function validateBackupPassphrase(passphrase: string): void {
+  if (passphrase.length < 12 || passphrase.length > 256) throw new Error("Use a backup passphrase between 12 and 256 characters.");
+}
+
+async function deriveBackupKey(passphrase: string, salt: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
+  validateBackupPassphrase(passphrase);
+  const material = await crypto.subtle.importKey("raw", textEncoder.encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", hash: "SHA-256", iterations: BACKUP_KDF_ITERATIONS, salt },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+function backupAdditionalData(record: Pick<EncryptedBackupWallet, "id" | "label" | "address" | "createdAt">): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(textEncoder.encode(`sunder|solana|backup|v1|${record.id}|${record.address}|${record.label}|${record.createdAt}`));
+}
+
+function parseBackupWallet(value: unknown): EncryptedBackupWallet {
+  if (!value || typeof value !== "object") throw new Error("The encrypted wallet backup contains an invalid wallet record.");
+  const candidate = value as Partial<EncryptedBackupWallet>;
+  if (typeof candidate.id !== "string" || !candidate.id.startsWith("embedded:") || candidate.id.length > 128) throw new Error("The encrypted wallet backup contains an invalid wallet id.");
+  if (typeof candidate.label !== "string" || candidate.label.length < 1 || candidate.label.length > 80) throw new Error("The encrypted wallet backup contains an invalid wallet label.");
+  if (typeof candidate.address !== "string" || candidate.address.length < 32 || candidate.address.length > 64) throw new Error("The encrypted wallet backup contains an invalid wallet address.");
+  try { address(candidate.address); } catch { throw new Error("The encrypted wallet backup contains an invalid wallet address."); }
+  if (typeof candidate.createdAt !== "number" || !Number.isFinite(candidate.createdAt) || candidate.createdAt <= 0) throw new Error("The encrypted wallet backup contains an invalid creation time.");
+  decodeBase64(candidate.publicKey, 32);
+  decodeBase64(candidate.iv, 12);
+  decodeBase64(candidate.ciphertext, 80);
+  return Object.freeze(candidate) as EncryptedBackupWallet;
+}
+
+function parseBackup(serialized: string): EmbeddedWalletBackup {
+  if (typeof serialized !== "string" || serialized.length === 0 || serialized.length > MAX_BACKUP_BYTES) throw new Error("The encrypted wallet backup file is empty or too large.");
+  let value: unknown;
+  try { value = JSON.parse(serialized); } catch { throw new Error("The selected file is not a valid Sunder wallet backup."); }
+  if (!value || typeof value !== "object") throw new Error("The selected file is not a valid Sunder wallet backup.");
+  const candidate = value as Partial<EmbeddedWalletBackup>;
+  if (candidate.schema !== BACKUP_SCHEMA || candidate.version !== BACKUP_VERSION) throw new Error("This wallet backup format is not supported.");
+  if (!candidate.kdf || candidate.kdf.name !== "PBKDF2" || candidate.kdf.hash !== "SHA-256" || candidate.kdf.iterations !== BACKUP_KDF_ITERATIONS) throw new Error("This wallet backup uses an unsupported key-derivation policy.");
+  decodeBase64(candidate.kdf.salt, 16);
+  if (!Array.isArray(candidate.wallets) || candidate.wallets.length < 1 || candidate.wallets.length > MAX_WALLETS) throw new Error("The wallet backup contains an invalid number of wallets.");
+  const wallets = candidate.wallets.map(parseBackupWallet);
+  if (new Set(wallets.map((wallet) => wallet.id)).size !== wallets.length || new Set(wallets.map((wallet) => wallet.address)).size !== wallets.length) throw new Error("The wallet backup contains duplicate wallet records.");
+  return Object.freeze({ ...candidate, wallets }) as EmbeddedWalletBackup;
+}
+
 async function getOrCreateDeviceKey(): Promise<CryptoKey> {
   if (!deviceKeyPromise) deviceKeyPromise = (async () => {
     const stored = await readStored<unknown>(DEVICE_KEY_ID);
@@ -172,7 +284,7 @@ function additionalData(record: Pick<StoredEmbeddedWallet, "id" | "address">): U
   return new Uint8Array(textEncoder.encode(`sunder|solana|embedded|v1|${record.id}|${record.address}`));
 }
 
-async function decryptSecret(record: StoredEmbeddedWallet): Promise<Uint8Array> {
+async function decryptSecret(record: StoredEmbeddedWallet): Promise<Uint8Array<ArrayBuffer>> {
   const key = await getOrCreateDeviceKey();
   let plaintext: ArrayBuffer;
   try {
@@ -254,6 +366,97 @@ export async function exportEmbeddedWalletPrivateKey(id: string): Promise<string
   } finally {
     secret.fill(0);
   }
+}
+
+export async function exportEmbeddedWalletBackup(passphrase: string): Promise<string> {
+  validateBackupPassphrase(passphrase);
+  const records = (await readAllStored()).flatMap((value) => {
+    const record = parseStoredWallet(value);
+    return record ? [record] : [];
+  }).sort((left, right) => left.createdAt - right.createdAt);
+  if (records.length === 0) throw new Error("Create an embedded wallet before exporting a vault backup.");
+
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveBackupKey(passphrase, salt);
+  const wallets: EncryptedBackupWallet[] = [];
+  for (const record of records) {
+    const secret = await decryptSecret(record);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const backupRecord = Object.freeze({ id: record.id, label: record.label, address: record.address, publicKey: encodeBase64(record.publicKey), createdAt: record.createdAt });
+    try {
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: backupAdditionalData(backupRecord) }, key, secret);
+      wallets.push(Object.freeze({ ...backupRecord, iv: encodeBase64(iv), ciphertext: encodeBase64(ciphertext) }));
+    } finally {
+      secret.fill(0);
+    }
+  }
+
+  const backup: EmbeddedWalletBackup = Object.freeze({
+    schema: BACKUP_SCHEMA,
+    version: BACKUP_VERSION,
+    createdAt: new Date().toISOString(),
+    kdf: Object.freeze({ name: "PBKDF2", hash: "SHA-256", iterations: BACKUP_KDF_ITERATIONS, salt: encodeBase64(salt) }),
+    wallets: Object.freeze(wallets),
+  });
+  return JSON.stringify(backup, null, 2);
+}
+
+export async function restoreEmbeddedWalletBackup(serialized: string, passphrase: string): Promise<readonly EmbeddedWalletMetadata[]> {
+  validateBackupPassphrase(passphrase);
+  const backup = parseBackup(serialized);
+  const salt = decodeBase64(backup.kdf.salt, 16);
+  const backupKey = await deriveBackupKey(passphrase, salt);
+  const currentRecords = (await readAllStored()).flatMap((value) => {
+    const record = parseStoredWallet(value);
+    return record ? [record] : [];
+  });
+  const currentById = new Map(currentRecords.map((record) => [record.id, record]));
+  const currentByAddress = new Map(currentRecords.map((record) => [record.address, record]));
+  const newAddresses = backup.wallets.filter((wallet) => !currentByAddress.has(wallet.address));
+  if (currentRecords.length + newAddresses.length > MAX_WALLETS) throw new Error(`This browser vault is limited to ${MAX_WALLETS} embedded wallets.`);
+
+  const deviceKey = await getOrCreateDeviceKey();
+  const restored: StoredEmbeddedWallet[] = [];
+  for (const backupRecord of backup.wallets) {
+    const idCollision = currentById.get(backupRecord.id);
+    if (idCollision && idCollision.address !== backupRecord.address) throw new Error("A different local wallet already uses an id from this backup.");
+    const existingAddress = currentByAddress.get(backupRecord.address);
+    const targetId = existingAddress?.id ?? backupRecord.id;
+    let plaintext: ArrayBuffer;
+    try {
+      plaintext = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: decodeBase64(backupRecord.iv, 12), additionalData: backupAdditionalData(backupRecord) },
+        backupKey,
+        decodeBase64(backupRecord.ciphertext, 80),
+      );
+    } catch {
+      throw new Error("Unable to decrypt this backup. Check the passphrase and file integrity.");
+    }
+    const secret = new Uint8Array(plaintext);
+    try {
+      if (secret.length !== 64) throw new Error("The decrypted wallet backup is invalid.");
+      const keyPair = Keypair.fromSecretKey(secret);
+      const walletAddress = keyPair.publicKey.toBase58();
+      if (walletAddress !== backupRecord.address || encodeBase64(keyPair.publicKey.toBytes()) !== backupRecord.publicKey) throw new Error("The backup wallet key does not match its public address.");
+      const recordBase = Object.freeze({
+        id: targetId,
+        kind: "wallet" as const,
+        version: 1 as const,
+        label: backupRecord.label,
+        address: backupRecord.address,
+        publicKey: keyPair.publicKey.toBytes(),
+        createdAt: backupRecord.createdAt,
+      });
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: additionalData(recordBase) }, deviceKey, secret);
+      restored.push(Object.freeze({ ...recordBase, iv, ciphertext }));
+    } finally {
+      secret.fill(0);
+    }
+  }
+
+  await writeStoredWallets(restored);
+  return Object.freeze(restored.map(metadata));
 }
 
 export function createEmbeddedWalletSession(wallet: EmbeddedWalletMetadata): WalletSession {

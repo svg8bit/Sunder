@@ -113,18 +113,22 @@ export function SniperScreen() {
   });
 
   const arm = form.handleSubmit((data) => {
+    const externallyArmed = mainnetLocked && executorAcceptanceArmed;
     workspace.record({
       category: "configuration",
-      action: mainnetLocked ? "Mainnet sniper remained locked" : "Sniper dry-run armed locally",
-      detail: mainnetLocked
+      action: externallyArmed ? "External Mainnet acceptance policy inspected" : mainnetLocked ? "Mainnet sniper remained locked" : "Sniper dry-run armed locally",
+      detail: externallyArmed
+        ? "The isolated one-shot operator policy is already armed; this browser form cannot mutate its signer or funding controls."
+        : mainnetLocked
         ? executorProvisioned
           ? "The isolated executor is provisioned; funding and immediate operator confirmation remain."
           : "Funded execution requires executor signer, RPC, relay, limits, funding and operator confirmation."
         : `${data.trigger} rule saved in dry-run mode; no persistent executor is connected.`,
-      state: mainnetLocked ? "locked" : "local",
+      state: externallyArmed ? "local" : mainnetLocked ? "locked" : "local",
       network,
     });
-    toast.warning(mainnetLocked ? executorProvisioned ? "Executor is provisioned; fund the bounded wallet before operator activation." : "Persistent Mainnet sniper execution is locked by policy; manual wallet swaps remain separate." : "Dry-run armed locally. Persistent executor is unconfigured.");
+    if (externallyArmed) toast.success("The bounded operator acceptance policy is already armed outside Vercel.");
+    else toast.warning(mainnetLocked ? executorProvisioned ? "Executor is provisioned; its remaining runtime gates must pass outside Vercel." : "Persistent Mainnet sniper execution is locked by policy; manual wallet swaps remain separate." : "Dry-run armed locally. Persistent executor is unconfigured.");
   });
 
   const solanaRelayConfig = {
@@ -134,6 +138,7 @@ export function SniperScreen() {
   };
   const executorAddress = family === "solana" ? import.meta.env.VITE_SOLANA_EXECUTOR_PUBLIC_ADDRESS?.trim() : undefined;
   const executorProvisioned = Boolean(executorAddress);
+  const executorAcceptanceArmed = family === "solana" && import.meta.env.VITE_SOLANA_EXECUTOR_POLICY_STATE === "acceptance-armed";
   const copyExecutorAddress = async () => {
     if (!executorAddress) return;
     await navigator.clipboard.writeText(executorAddress);
@@ -144,7 +149,7 @@ export function SniperScreen() {
     <div className="screen sniper-screen">
       <div className="screen-heading">
         <div><span className="eyebrow">P0 execution pipeline / {family.toUpperCase()}</span><h1>Sniper</h1><p>Rules, risk, simulation, relays and canonical confirmation in one bounded path.</p></div>
-        <div className="heading-actions"><Badge tone={mainnetLocked ? "warn" : "good"}>{mainnetLocked ? executorProvisioned ? "Funding gate" : "Persistent executor locked" : "Test mode"}</Badge><Button size="sm" onClick={() => setAdvanced((current) => !current)}>{advanced ? "Basic controls" : "Advanced controls"}</Button></div>
+        <div className="heading-actions"><Badge tone={executorAcceptanceArmed ? "good" : mainnetLocked ? "warn" : "good"}>{executorAcceptanceArmed ? "Acceptance armed" : mainnetLocked ? executorProvisioned ? "Runtime gates" : "Persistent executor locked" : "Test mode"}</Badge><Button size="sm" onClick={() => setAdvanced((current) => !current)}>{advanced ? "Basic controls" : "Advanced controls"}</Button></div>
       </div>
       <div className="sniper-layout">
         <form className="sniper-form" onSubmit={(event) => event.preventDefault()}>
@@ -193,14 +198,14 @@ export function SniperScreen() {
           </Panel>
           <Panel className="honesty-panel"><Info size={18} /><div><strong>No false success</strong><p>A relay response, predicted token address, or local simulation cannot produce a green execution state. Only a canonical signature/receipt does.</p></div></Panel>
           <Panel title="Current status">
-            <div className="status-list"><div><span>Rule</span><Badge tone={form.formState.isValid ? "good" : "warn"}>{form.formState.isValid ? "Valid" : "Incomplete"}</Badge></div><div><span>Simulation</span><Badge tone={simulationState === "passed" ? "good" : simulationState === "failed" ? "bad" : "neutral"}>{simulationState}</Badge></div><div><span>Executor</span><Badge tone={executorProvisioned ? "good" : "warn"}>{executorProvisioned ? "Provisioned" : "Unconfigured"}</Badge></div><div><span>Persistent Mainnet</span><Badge tone="warn">Funding + confirmation</Badge></div></div>
+            <div className="status-list"><div><span>Rule</span><Badge tone={form.formState.isValid ? "good" : "warn"}>{form.formState.isValid ? "Valid" : "Incomplete"}</Badge></div><div><span>Simulation</span><Badge tone={simulationState === "passed" ? "good" : simulationState === "failed" ? "bad" : "neutral"}>{simulationState}</Badge></div><div><span>Executor</span><Badge tone={executorProvisioned ? "good" : "warn"}>{executorProvisioned ? "Provisioned" : "Unconfigured"}</Badge></div><div><span>Persistent Mainnet</span><Badge tone={executorAcceptanceArmed ? "good" : "warn"}>{executorAcceptanceArmed ? "One-shot armed" : "Runtime-gated"}</Badge></div></div>
             {executorAddress ? <div className="keys-note"><ShieldCheck size={14} /><span>Dedicated bounded wallet: {executorAddress.slice(0, 6)}…{executorAddress.slice(-6)}</span><Button type="button" size="sm" variant="ghost" onClick={() => void copyExecutorAddress()}><ClipboardCopy size={13} /> Copy</Button></div> : null}
           </Panel>
         </aside>
       </div>
       <div className="sniper-actionbar">
-        <div className="environment-warning"><LockKeyhole size={20} /><div><strong>{chain.production ? `Persistent automation on ${chain.name}` : `Safe verification on ${chain.name}`}</strong><span>{chain.production ? executorProvisioned ? "RPC, Jito, signer policy and limits are provisioned. Funding and an immediate operator confirmation remain before the first bounded shot." : "The executor stays locked until signer, RPC, relay, limits, funding and operator gates pass. Manual browser swaps remain separately user-signed." : "Dry-run and wallet verification are available; no persistent signer is connected."}</span></div></div>
-        <div className="button-pair"><Button size="lg" onClick={() => void simulate()}><Play size={18} /> Run simulation</Button><Button size="lg" variant="primary" onClick={() => void arm()}><Crosshair size={18} /> {chain.production ? "Check Mainnet lock" : "Arm dry-run"}</Button></div>
+        <div className="environment-warning"><LockKeyhole size={20} /><div><strong>{chain.production ? `Persistent automation on ${chain.name}` : `Safe verification on ${chain.name}`}</strong><span>{chain.production ? executorAcceptanceArmed ? "A separate bounded operator policy is armed for one 0.001 SOL SUNDER-keyword Pump launch. Only canonical RPC confirmation counts; this browser cannot change the signer policy." : executorProvisioned ? "The isolated executor is provisioned, but Vercel cannot attest its live funding, signer or operator gates." : "The executor stays locked until signer, RPC, relay, limits, funding and operator gates pass. Manual browser swaps remain separately user-signed." : "Dry-run and wallet verification are available; no persistent signer is connected."}</span></div></div>
+        <div className="button-pair"><Button size="lg" onClick={() => void simulate()}><Play size={18} /> Run simulation</Button><Button size="lg" variant="primary" onClick={() => void arm()}><Crosshair size={18} /> {executorAcceptanceArmed ? "View armed policy" : chain.production ? "Check Mainnet gates" : "Arm dry-run"}</Button></div>
         <div className="keys-note"><ShieldCheck size={14} /> Your keys never enter Sunder. Browser wallets sign interactive transactions; the executor uses a separate signer policy.</div>
       </div>
     </div>

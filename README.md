@@ -2,7 +2,7 @@
 
 Sunder is a self-custody Solana and Ethereum execution console with launch, wallet, sniper, swap, task, tracking and audit workflows. It is an independent product with familiar operational labels and a strict rule: provider acceptance, simulation, or a predicted address is never reported as on-chain success.
 
-The application supports Solana Mainnet and Ethereum Mainnet as product modes. Devnet and Sepolia are the safe automated verification environments. Interactive Solana Mainnet swaps can be simulated and explicitly signed by one or more selected Wallet Standard browser wallets; persistent funded Mainnet automation remains locked until RPC, signer, relay, funding, budgets and operator confirmation are configured.
+The application supports Solana Mainnet and Ethereum Mainnet as product modes. Devnet and Sepolia remain safe verification environments. Interactive Solana Mainnet swaps run as one build → simulation → signature → submission → canonical-confirmation action for each selected signer. Persistent funded automation remains runtime-gated; the isolated operator deployment must independently prove RPC, signer, relay, funding, budgets and exact operator confirmation before it becomes ready.
 
 ## Product areas
 
@@ -44,7 +44,7 @@ Copy `.env.example` only when custom public RPC endpoints or executor configurat
 
 The committed Solana Mainnet fallback is PublicNode because its HTTP and WebSocket endpoints were verified from the browser build. It is shared, best-effort infrastructure. Recent-token discovery uses a five-second Vercel CDN cache with a bounded direct-provider fallback and a two-minute browser cache so first paint is not held behind repeated anonymous provider calls. Configure a project-scoped browser-safe RPC before funded use; signer or relay credentials belong only in the private executor/signing boundary.
 
-The web app never accepts a pasted private key/seed and never transmits secret material. `Create wallet` on Solana generates a Keypair client-side, immediately encrypts its 64-byte secret with a non-extractable AES-GCM device key in IndexedDB, inserts and selects the signer in the wallet basket, and exposes a warned explicit Base58 export for backup. Clearing browser data loses an unexported embedded wallet, and this is not cross-device account storage. Phantom, Solflare and Backpack remain available through Wallet Standard. All signer balances refresh from confirmed Mainnet RPC every 10 seconds; watch-only addresses are never treated as signers.
+The web app never accepts a pasted private key/seed and never transmits secret material. `Create wallet` on Solana generates a Keypair client-side, immediately encrypts its 64-byte secret with a non-extractable AES-GCM device key in IndexedDB, inserts and selects the signer in the wallet basket, and exposes a warned explicit Base58 export. The Wallets panel can also download/restore the entire local vault as a PBKDF2-SHA256 + AES-256-GCM passphrase-encrypted JSON file; the plaintext keys and passphrase are never uploaded. This protects recovery from browser-data loss but is not an account-synced custody backend. Phantom, Solflare and Backpack remain available through Wallet Standard. All signer balances refresh from confirmed Mainnet RPC every 10 seconds; watch-only addresses are never treated as signers.
 
 ## Verification
 

@@ -2160,6 +2160,59 @@ code {
   color: var(--ember);
 }
 
+.embedded-backup-modal {
+  width: min(94vw, 590px);
+}
+
+.embedded-backup-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #285341;
+  background: #091610;
+  color: var(--mint);
+}
+
+.embedded-backup-notice svg { flex: 0 0 auto; }
+.embedded-backup-notice span,
+.embedded-backup-notice strong { display: block; }
+.embedded-backup-notice strong { margin-bottom: 4px; color: var(--text); font-size: 11px; }
+.embedded-backup-notice span { color: var(--muted); font: 500 10px/1.5 var(--mono); }
+
+.embedded-backup-form {
+  display: grid;
+  gap: 11px;
+  margin-top: 13px;
+}
+
+.embedded-backup-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--faint);
+  font: 600 9px var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.embedded-backup-form input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  outline: 0;
+  background: #090c0f;
+  color: var(--text);
+  font: 500 10px var(--mono);
+}
+
+.embedded-backup-form input:focus { border-color: var(--ember); }
+.embedded-backup-form input[type="file"] { padding: 8px; color: var(--muted); }
+.embedded-backup-form input[type="file"]::file-selector-button { margin-right: 8px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text); font: 600 9px var(--mono); }
+.embedded-backup-file b { display: flex; align-items: center; gap: 6px; color: var(--muted); font: 500 9px var(--mono); text-transform: none; }
+.embedded-backup-footnote { margin: 12px 0 0; color: var(--faint); font: 500 9px/1.5 var(--mono); }
+
 .safe-replacement {
   margin-top: 14px;
 }
@@ -4207,7 +4260,7 @@ code {
 
 .terminal-wallet-toolbar {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) 30px auto 30px;
+  grid-template-columns: minmax(160px, 1fr) 30px auto 30px 30px 30px;
   gap: 6px;
 }
 
@@ -4444,7 +4497,7 @@ code {
   .terminal-wallet-row { grid-template-columns: 22px minmax(120px, 1fr) 75px 50px; }
   .terminal-wallet-table__head > span:nth-child(4),
   .terminal-wallet-row > :nth-child(4) { display: none; }
-  .terminal-wallet-toolbar { grid-template-columns: minmax(0, 1fr) 30px auto 30px; }
+  .terminal-wallet-toolbar { grid-template-columns: minmax(0, 1fr) 30px auto 30px 30px 30px; }
   .market-chart--candles { min-height: 350px; grid-template-rows: 34px minmax(290px, 1fr) auto; }
   .market-chart__canvas { min-height: 290px; }
 }

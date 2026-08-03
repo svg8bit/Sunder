@@ -7,8 +7,10 @@ import {
   createEmbeddedWallet,
   createEmbeddedWalletSession,
   deleteEmbeddedWallet,
+  exportEmbeddedWalletBackup,
   exportEmbeddedWalletPrivateKey,
   listEmbeddedWallets,
+  restoreEmbeddedWalletBackup,
 } from "../src/solana/embedded-wallet-vault";
 
 beforeAll(() => {
@@ -41,5 +43,27 @@ describe("encrypted embedded Solana wallet vault", () => {
     await deleteEmbeddedWallet(wallet.id);
     expect(await listEmbeddedWallets()).toEqual([]);
     await expect(exportEmbeddedWalletPrivateKey(wallet.id)).rejects.toThrow(/no longer exists/);
+  });
+
+  it("exports a passphrase-encrypted vault and restores the same signing key", async () => {
+    const wallet = await createEmbeddedWallet();
+    const privateKey = await exportEmbeddedWalletPrivateKey(wallet.id);
+    const passphrase = "correct horse battery staple";
+    const backup = await exportEmbeddedWalletBackup(passphrase);
+
+    expect(backup).toContain("sunder-solana-embedded-vault-backup");
+    expect(backup).not.toContain(privateKey);
+    await deleteEmbeddedWallet(wallet.id);
+    await expect(restoreEmbeddedWalletBackup(backup, "wrong password value")).rejects.toThrow(/Unable to decrypt/);
+    expect(await listEmbeddedWallets()).toEqual([]);
+
+    const restored = await restoreEmbeddedWalletBackup(backup, passphrase);
+    expect(restored).toMatchObject([{ id: wallet.id, address: wallet.address }]);
+    expect(await exportEmbeddedWalletPrivateKey(wallet.id)).toBe(privateKey);
+
+    const restoredAgain = await restoreEmbeddedWalletBackup(backup, passphrase);
+    expect(restoredAgain).toMatchObject([{ id: wallet.id, address: wallet.address }]);
+    expect(await listEmbeddedWallets()).toHaveLength(1);
+    await deleteEmbeddedWallet(wallet.id);
   });
 });

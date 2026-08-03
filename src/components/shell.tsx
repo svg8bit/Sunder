@@ -107,6 +107,7 @@ export function AppShell({ children, route, navigate }: { readonly children: Rea
   const { audit } = useWorkspace();
   const nav = useMemo(() => routes, []);
   const solanaExecutorProvisioned = chain.family === "solana" && Boolean(import.meta.env.VITE_SOLANA_EXECUTOR_PUBLIC_ADDRESS?.trim());
+  const solanaAcceptanceArmed = chain.family === "solana" && import.meta.env.VITE_SOLANA_EXECUTOR_POLICY_STATE === "acceptance-armed";
   return (
     <div className={cn("app-shell", route === "swap" && "app-shell--terminal")}>
       <header className="topbar">
@@ -163,7 +164,7 @@ export function AppShell({ children, route, navigate }: { readonly children: Rea
       <footer className="statusbar">
         <span><span className="statusbar__dot" /> Console online</span>
         <span><Bot size={13} /> Executor <strong>{solanaExecutorProvisioned ? "provisioned" : "not configured"}</strong></span>
-        <span><ShieldCheck size={13} /> Automation <strong>{solanaExecutorProvisioned ? "funding gate" : "locked"}</strong></span>
+        <span><ShieldCheck size={13} /> Automation <strong>{solanaAcceptanceArmed ? "acceptance armed" : solanaExecutorProvisioned ? "runtime-gated" : "locked"}</strong></span>
         <span><Gauge size={13} /> RPC confirmation required</span>
       </footer>
     </div>

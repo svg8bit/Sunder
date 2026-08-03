@@ -5,8 +5,10 @@ import {
   createEmbeddedWallet,
   createEmbeddedWalletSession,
   deleteEmbeddedWallet,
+  exportEmbeddedWalletBackup,
   exportEmbeddedWalletPrivateKey,
   listEmbeddedWallets,
+  restoreEmbeddedWalletBackup,
   type EmbeddedWalletMetadata,
 } from "../solana/embedded-wallet-vault";
 
@@ -33,6 +35,8 @@ interface SolanaWalletRegistryValue {
   readonly disconnect: (walletId: string) => Promise<void>;
   readonly removeEmbedded: (walletId: string) => Promise<void>;
   readonly exportEmbedded: (walletId: string) => Promise<string>;
+  readonly exportEmbeddedBackup: (passphrase: string) => Promise<string>;
+  readonly restoreEmbeddedBackup: (serialized: string, passphrase: string) => Promise<readonly ConnectedSolanaWallet[]>;
 }
 
 const SolanaWalletRegistryContext = createContext<SolanaWalletRegistryValue | null>(null);
@@ -203,6 +207,13 @@ export function SolanaWalletRegistryProvider({ children }: { readonly children: 
   }, []);
 
   const exportEmbedded = useCallback((id: string) => exportEmbeddedWalletPrivateKey(id), []);
+  const exportEmbeddedBackup = useCallback((passphrase: string) => exportEmbeddedWalletBackup(passphrase), []);
+  const restoreEmbeddedBackup = useCallback(async (serialized: string, passphrase: string) => {
+    const restored = (await restoreEmbeddedWalletBackup(serialized, passphrase)).map(embeddedEntry);
+    setEmbeddedWallets((current) => Object.freeze([...restored, ...current].filter((wallet, index, values) => values.findIndex((candidate) => candidate.id === wallet.id) === index)));
+    for (const entry of restored) announceSignerAvailable(entry.id);
+    return Object.freeze(restored);
+  }, []);
 
   const standardWallets = useMemo(() => Object.freeze([...sessions.entries()].map(([connectorId, session]) => Object.freeze({
     id: walletId(connectorId, session),
@@ -223,7 +234,9 @@ export function SolanaWalletRegistryProvider({ children }: { readonly children: 
     disconnect,
     removeEmbedded,
     exportEmbedded,
-  }), [connect, connectingConnectorId, connection.connectors, createEmbedded, creatingEmbeddedWallet, disconnect, exportEmbedded, removeEmbedded, wallets]);
+    exportEmbeddedBackup,
+    restoreEmbeddedBackup,
+  }), [connect, connectingConnectorId, connection.connectors, createEmbedded, creatingEmbeddedWallet, disconnect, exportEmbedded, exportEmbeddedBackup, removeEmbedded, restoreEmbeddedBackup, wallets]);
 
   return <SolanaWalletRegistryContext.Provider value={value}>{children}</SolanaWalletRegistryContext.Provider>;
 }
