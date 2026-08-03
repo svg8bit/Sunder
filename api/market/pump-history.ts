@@ -1,4 +1,4 @@
-import { fetchPumpTradeHistory, serializePumpTradeHistory } from "../../src/solana/market";
+import { fetchPumpTradeHistory, serializePumpTradeHistory } from "../../src/solana/market.js";
 
 const OFFICIAL_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com";
 const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,64}$/;
