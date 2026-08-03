@@ -75,7 +75,7 @@ function showRecentWindow(chart: IChartApi, candleCount: number): void {
   // Start where a trading terminal is useful: the latest confirmed action.
   // Older launch/migration spikes remain one pan away instead of flattening a
   // crashed token's current candles into a one-pixel line after refresh.
-  const visibleBars = candleCount < 12 ? 18 : 24;
+  const visibleBars = 12;
   chart.timeScale().setVisibleLogicalRange({
     from: Math.max(-6, candleCount - visibleBars),
     to: candleCount + 3,
