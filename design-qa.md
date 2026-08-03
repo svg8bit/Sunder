@@ -52,6 +52,14 @@ There are no remaining actionable P0, P1 or P2 findings.
 - Browser wallet QA created `Sunder Wallet 1` without a dialog, inserted and selected it immediately, then reloaded the permanent token URL. The signer row, selection and IndexedDB vault (`sunder-solana-embedded-vault`) persisted; no key material was printed or captured.
 - Solana Sniper now renders the provisioned isolated executor address and honest `Funding + confirmation` state. Jito is displayed as configured only when its public status endpoint is present at build time.
 
+### Iteration 4 — same-mint chart and one-click execution hotfix passed
+
+- The permanent Sunder route and attempted Axiom comparison used the same mint, `HCPtSBVKbV71UmE3ggccV3uNwapthUMMf63o7qGYpump`. Axiom's fresh automated session stopped at its Cloudflare human-verification screen, so no unverifiable Axiom OHLC values are claimed. Sunder was instead checked against 95 decoded confirmed Pump `TradeEvent` records from a bounded 120-signature Mainnet RPC sample.
+- Multiple `TradeEvent` logs in one transaction are now keyed by `signature:eventIndex`; they are no longer collapsed or ordered by signature text. Confirmed timestamp, slot and log position determine each OHLC bucket.
+- Empty time buckets stay empty and volume remains the sum of observed swaps only. A 4% minimum visible price range prevents a small move (the rendered sample was `-0.30%`) from filling the entire chart vertically, while real large moves continue to autoscale normally.
+- Sub-$100K market-cap ticks now retain enough precision (for example `$2,065`, `$2,070`) instead of repeating an indistinguishable `$2.07K` label on every grid line. Evidence: `artifacts/qa/terminal-chart-scale-mainnet-final.png`.
+- The production purchase failure was reproduced without spending funds: the free RPC returned its current slot from `getBlockHeight`, while a fresh Jupiter manifest carried a lower but valid `lastValidBlockHeight`. The same RPC returned `isBlockhashValid=true`. Execution now checks the exact blockhash with `isBlockhashValid`, automatically rebuilds once before signing if it expired, and exposes one Buy/Sell action button for the full build → simulate → sign → submit → canonical confirmation flow.
+
 ## Interaction and browser evidence
 
 - Browser: `agent-browser` against the loopback Vite application.

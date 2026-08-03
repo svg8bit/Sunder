@@ -107,6 +107,8 @@ export function safeTokenIcon(value: string | undefined): string | undefined {
 
 export interface PumpTrade {
   readonly signature: string;
+  /** Zero-based position of the TradeEvent inside the confirmed transaction logs. */
+  readonly eventIndex: number;
   readonly slot: number;
   readonly mint: string;
   readonly user: string;
@@ -123,19 +125,31 @@ export interface PumpTrade {
   readonly priceSol: number;
 }
 
+function pumpTradeKey(trade: Pick<PumpTrade, "signature" | "eventIndex">): string {
+  return `${trade.signature}:${trade.eventIndex}`;
+}
+
+function comparePumpTradesDescending(left: PumpTrade, right: PumpTrade): number {
+  return right.slot - left.slot
+    || right.eventIndex - left.eventIndex
+    || right.timestamp - left.timestamp
+    || right.signature.localeCompare(left.signature);
+}
+
 export function mergeConfirmedPumpTrade(current: readonly PumpTrade[], trade: PumpTrade): readonly PumpTrade[] {
-  const newestSlot = current[0]?.slot ?? 0;
-  if (trade.slot < newestSlot) return current;
-  return Object.freeze([trade, ...current.filter((item) => item.signature !== trade.signature)]
-    .sort((left, right) => right.slot - left.slot || right.timestamp - left.timestamp || right.signature.localeCompare(left.signature))
+  const newest = current[0];
+  if (newest && (trade.slot < newest.slot || (trade.slot === newest.slot && trade.eventIndex < newest.eventIndex))) return current;
+  const key = pumpTradeKey(trade);
+  return Object.freeze([trade, ...current.filter((item) => pumpTradeKey(item) !== key)]
+    .sort(comparePumpTradesDescending)
     .slice(0, 160));
 }
 
 export function mergePumpTradeHistory(current: readonly PumpTrade[], history: readonly PumpTrade[]): readonly PumpTrade[] {
-  const bySignature = new Map<string, PumpTrade>();
-  for (const trade of [...current, ...history]) bySignature.set(trade.signature, trade);
-  return Object.freeze([...bySignature.values()]
-    .sort((left, right) => right.slot - left.slot || right.timestamp - left.timestamp || right.signature.localeCompare(left.signature))
+  const byEvent = new Map<string, PumpTrade>();
+  for (const trade of [...current, ...history]) byEvent.set(pumpTradeKey(trade), trade);
+  return Object.freeze([...byEvent.values()]
+    .sort(comparePumpTradesDescending)
     .slice(0, 160));
 }
 
@@ -165,7 +179,7 @@ function publicKey(value: unknown, field: string): string {
 
 export function normalizePumpTradeEvent(
   value: unknown,
-  context: { readonly signature: string; readonly slot: number; readonly decimals: number },
+  context: { readonly signature: string; readonly eventIndex?: number; readonly slot: number; readonly decimals: number },
 ): PumpTrade {
   if (!value || typeof value !== "object") throw new Error("Pump trade event is not an object.");
   const event = value as Record<string, unknown>;
@@ -185,6 +199,7 @@ export function normalizePumpTradeEvent(
   const reserveSpotPrice = virtualTokenReserves > 0 ? virtualSolReserves / virtualTokenReserves : 0;
   return Object.freeze({
     signature: context.signature,
+    eventIndex: context.eventIndex ?? 0,
     slot: context.slot,
     mint: publicKey(event.mint, "mint"),
     user: publicKey(event.user, "user"),
@@ -208,7 +223,7 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 
 export function decodePumpTradeLog(
   log: string,
-  context: { readonly signature: string; readonly slot: number; readonly decimals: number },
+  context: { readonly signature: string; readonly eventIndex?: number; readonly slot: number; readonly decimals: number },
 ): PumpTrade | undefined {
   if (!log.startsWith("Program data: ")) return undefined;
   let data: Uint8Array;
@@ -317,9 +332,9 @@ export async function fetchPumpTradeHistory(input: {
         input.fetcher,
       ));
       if (parsed.error || !parsed.result?.meta?.logMessages) return [];
-      return parsed.result.meta.logMessages.flatMap((log) => {
+      return parsed.result.meta.logMessages.flatMap((log, eventIndex) => {
         try {
-          const trade = decodePumpTradeLog(log, { signature: entry.signature, slot: parsed.result!.slot, decimals: input.decimals });
+          const trade = decodePumpTradeLog(log, { signature: entry.signature, eventIndex, slot: parsed.result!.slot, decimals: input.decimals });
           return trade?.mint === input.mint ? [trade] : [];
         } catch {
           return [];
@@ -407,9 +422,9 @@ export async function subscribePumpTrades(input: {
       if (!notification.success) return;
       const { context, value } = notification.data.params.result;
       if (value.err) return;
-      for (const log of value.logs) {
+      for (const [eventIndex, log] of value.logs.entries()) {
         try {
-          const trade = decodePumpTradeLog(log, { signature: value.signature, slot: context.slot, decimals: input.decimals });
+          const trade = decodePumpTradeLog(log, { signature: value.signature, eventIndex, slot: context.slot, decimals: input.decimals });
           if (trade?.mint === input.mint) input.onTrade(trade);
         } catch {
           // Ignore non-trade or version-skewed events; the aggregate token API remains live.

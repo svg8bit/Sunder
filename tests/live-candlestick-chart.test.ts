@@ -5,6 +5,7 @@ import { mergeConfirmedPumpTrade, type PumpTrade } from "../src/solana/market";
 function pumpTrade(signature: string, slot: number, timestamp: number): PumpTrade {
   return {
     signature,
+    eventIndex: 0,
     slot,
     timestamp,
     mint: "mint",
@@ -23,7 +24,7 @@ function pumpTrade(signature: string, slot: number, timestamp: number): PumpTrad
 }
 
 describe("live candlestick aggregation", () => {
-  it("builds chronological OHLCV buckets only from observed prices", () => {
+  it("builds chronological OHLCV buckets only from observed trades", () => {
     const candles = aggregateLiveCandles([
       { at: 32_900, price: 4, volume: 2 },
       { at: 30_100, price: 2, volume: 1 },
@@ -51,6 +52,22 @@ describe("live candlestick aggregation", () => {
       { at: 10_000, order: 100, price: 1 },
       { at: 10_000, order: 101, price: 2 },
     ], 1)).toEqual([{ time: 10, open: 1, high: 3, low: 1, close: 3, volume: 0 }]);
+  });
+
+  it("keeps empty intervals empty instead of fabricating zero-volume trades", () => {
+    expect(aggregateLiveCandles([
+      { at: 10_100, order: 100, price: 2, volume: 1 },
+      { at: 13_100, order: 103, price: 5, volume: 3 },
+    ], 1)).toEqual([
+      { time: 10, open: 2, high: 2, low: 2, close: 2, volume: 1 },
+      { time: 13, open: 5, high: 5, low: 5, close: 5, volume: 3 },
+    ]);
+  });
+
+  it("keeps multiple confirmed events from the same transaction in log order", () => {
+    const current = [{ ...pumpTrade("same", 102, 10_000), eventIndex: 0, priceSol: 1 }];
+    const merged = mergeConfirmedPumpTrade(current, { ...pumpTrade("same", 102, 10_000), eventIndex: 7, priceSol: 2 });
+    expect(merged.map((trade) => [trade.eventIndex, trade.priceSol])).toEqual([[7, 2], [0, 1]]);
   });
 
   it("does not insert a delayed confirmed slot behind the live chart watermark", () => {

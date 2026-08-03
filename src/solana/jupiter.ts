@@ -309,8 +309,8 @@ interface RpcEnvelope<T> {
 }
 
 let rpcSequence = 0;
-async function rpc<T>(rpcUrl: string, method: string, params: readonly unknown[], signal?: AbortSignal): Promise<T> {
-  const response = await fetch(rpcUrl, {
+async function rpc<T>(rpcUrl: string, method: string, params: readonly unknown[], signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<T> {
+  const response = await fetcher(rpcUrl, {
     method: "POST",
     credentials: "omit",
     headers: { "content-type": "application/json", accept: "application/json" },
@@ -322,6 +322,27 @@ async function rpc<T>(rpcUrl: string, method: string, params: readonly unknown[]
   if (envelope.error) throw new Error(`Solana RPC ${method} failed: ${envelope.error.message}`);
   if (envelope.result === undefined) throw new Error(`Solana RPC ${method} returned no result.`);
   return envelope.result;
+}
+
+const blockhashValiditySchema = z.object({
+  context: z.object({ slot: z.number().int().nonnegative() }),
+  value: z.boolean(),
+});
+
+export async function isJupiterBlockhashValid(input: {
+  readonly rpcUrl: string;
+  readonly blockhash: string;
+  readonly signal?: AbortSignal;
+  readonly fetcher?: typeof fetch;
+}): Promise<boolean> {
+  const result = await rpc<unknown>(
+    input.rpcUrl,
+    "isBlockhashValid",
+    [input.blockhash, { commitment: "confirmed" }],
+    input.signal,
+    input.fetcher,
+  );
+  return blockhashValiditySchema.parse(result).value;
 }
 
 const tokenBalanceJsonSchema = z.object({
@@ -379,6 +400,13 @@ export interface ConfirmedSwapReceipt {
   readonly quotedOutputAtomic: bigint;
   readonly minimumOutputAtomic: bigint;
   readonly route: readonly string[];
+}
+
+export class JupiterBlockhashExpiredError extends Error {
+  constructor(message = "Jupiter transaction blockhash is no longer valid.") {
+    super(message);
+    this.name = "JupiterBlockhashExpiredError";
+  }
 }
 
 export function analyzeJupiterSwapReceipt(prepared: PreparedJupiterSwap, signature: string, transaction: unknown): ConfirmedSwapReceipt {
@@ -448,9 +476,12 @@ export async function executePreparedJupiterSwap(input: {
     throw new Error("Connected Wallet Standard account changed after quote preparation.");
   }
   if (!input.wallet.signTransaction) throw new Error("This Wallet Standard provider does not support signTransaction.");
-  const height = await input.client.runtime.rpc.getBlockHeight({ commitment: "confirmed" }).send({ abortSignal: deadlineSignal(input.signal) });
-  if (height + 10n >= BigInt(input.prepared.build.blockhashWithMetadata.lastValidBlockHeight)) {
-    throw new Error("Quote blockhash is too close to expiry. Refresh the quote before signing.");
+  const rpcUrl = String(input.client.config.endpoint);
+  // Some public providers currently return the slot for getBlockHeight. That
+  // value cannot be compared with Jupiter's lastValidBlockHeight and rejected
+  // fresh transactions in production. Ask the RPC about this exact blockhash.
+  if (!await isJupiterBlockhashValid({ rpcUrl, blockhash: input.prepared.recentBlockhash, signal: input.signal })) {
+    throw new JupiterBlockhashExpiredError();
   }
   input.onState?.("awaiting-signature");
   assertIsTransactionWithinSizeLimit(input.prepared.transaction);
@@ -476,6 +507,7 @@ export async function executePreparedJupiterSwap(input: {
   const startedAt = Date.now();
   let observedProcessed = false;
   let observedCanonicalStatus = false;
+  let lastValidityCheckAt = startedAt;
   while (Date.now() - startedAt < 75_000) {
     const statuses = await input.client.runtime.rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: true }).send({ abortSignal: deadlineSignal(input.signal) });
     const status = statuses.value[0];
@@ -486,7 +518,6 @@ export async function executePreparedJupiterSwap(input: {
     }
     if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") {
       observedCanonicalStatus = true;
-      const rpcUrl = String(input.client.config.endpoint);
       const transaction = await rpc<ConfirmedTransactionJson | null>(rpcUrl, "getTransaction", [signature, {
         commitment: "confirmed",
         encoding: "jsonParsed",
@@ -498,10 +529,10 @@ export async function executePreparedJupiterSwap(input: {
         return receipt;
       }
     }
-    if (!observedCanonicalStatus) {
-      const currentHeight = await input.client.runtime.rpc.getBlockHeight({ commitment: "confirmed" }).send({ abortSignal: deadlineSignal(input.signal) });
-      if (currentHeight > BigInt(input.prepared.build.blockhashWithMetadata.lastValidBlockHeight)) {
-        throw new Error("Transaction blockhash expired before canonical confirmation.");
+    if (!observedCanonicalStatus && Date.now() - lastValidityCheckAt >= 5_000) {
+      lastValidityCheckAt = Date.now();
+      if (!await isJupiterBlockhashValid({ rpcUrl, blockhash: input.prepared.recentBlockhash, signal: input.signal })) {
+        throw new JupiterBlockhashExpiredError("Transaction blockhash expired before canonical confirmation.");
       }
     }
     await new Promise<void>((resolve, reject) => {

@@ -214,6 +214,8 @@ test("terminal panels drag, persist, and expose live candlestick controls", asyn
   await expect(page.getByRole("button", { name: "1s", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Charting by TradingView" })).toBeVisible();
   await expect(page.getByLabel("Slippage percent")).toHaveValue("1");
+  await expect(trade.locator(".terminal-quote-button")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /Build & simulate|Sign .* submit/i })).toHaveCount(0);
 
   const before = await trade.boundingBox();
   const handleBox = await handle.boundingBox();

@@ -4,6 +4,7 @@ import { applyPercentageBps, formatAtomicAmount, parseDecimalAmount } from "../s
 import {
   analyzeJupiterSwapReceipt,
   buildJupiterSwapUrl,
+  isJupiterBlockhashValid,
   requestJupiterBuild,
   WRAPPED_SOL_MINT,
   type JupiterBuildResponse,
@@ -130,6 +131,24 @@ describe("Solana amount safety", () => {
 });
 
 describe("Jupiter direct execution boundary", () => {
+  it("uses canonical blockhash validity instead of comparing a provider slot with block height", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { readonly method: string; readonly params: readonly unknown[] };
+      expect(request.method).toBe("isBlockhashValid");
+      expect(request.params).toEqual([prepared().recentBlockhash, { commitment: "confirmed" }]);
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { context: { slot: 436_916_282 }, value: true },
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await expect(isJupiterBlockhashValid({
+      rpcUrl: "https://rpc.example",
+      blockhash: prepared().recentBlockhash,
+      fetcher,
+    })).resolves.toBe(true);
+  });
+
   it("builds a zero-platform-fee buy URL with explicit route policy", () => {
     const url = new URL(buildJupiterSwapUrl({ direction: "buy", tokenMint, amountAtomic: 50_000_000n, taker: wallet, slippageBps: 125, priorityProfile: "veryHigh", fastMode: true }));
     expect(url.origin + url.pathname).toBe("https://api.jup.ag/swap/v2/build");
@@ -275,14 +294,15 @@ describe("live token and Pump event validation", () => {
       virtualTokenReserves: "1000000000000",
     }, { signature: "x".repeat(88), slot: 99, decimals: 6 });
     expect(event.side).toBe("buy");
+    expect(event.eventIndex).toBe(0);
     expect(event.priceSol).toBe(0.000003);
     expect(event.virtualSolReservesLamports).toBe(3_000_000_000n);
     expect(event.feeBasisPoints + event.creatorFeeBasisPoints).toBe(125);
   });
 
   it("decodes the current official Pump TradeEvent prefix from a confirmed program-data log", () => {
-    const decoded = decodePumpTradeLog(pumpTradeLog(), { signature: "z".repeat(88), slot: 101, decimals: 6 });
-    expect(decoded).toMatchObject({ mint: WRAPPED_SOL_MINT, user: PUMP_PROGRAM_ADDRESS, side: "buy", feeBasisPoints: 100, creatorFeeBasisPoints: 25, priceSol: 0.000003 });
+    const decoded = decodePumpTradeLog(pumpTradeLog(), { signature: "z".repeat(88), eventIndex: 17, slot: 101, decimals: 6 });
+    expect(decoded).toMatchObject({ mint: WRAPPED_SOL_MINT, user: PUMP_PROGRAM_ADDRESS, side: "buy", eventIndex: 17, feeBasisPoints: 100, creatorFeeBasisPoints: 25, priceSol: 0.000003 });
     expect(decodePumpTradeLog("Program log: not an event", { signature: "z".repeat(88), slot: 101, decimals: 6 })).toBeUndefined();
   });
 

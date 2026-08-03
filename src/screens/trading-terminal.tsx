@@ -38,6 +38,7 @@ import { SOLANA_MAINNET_RPC_URL } from "../solana/client";
 import {
   executePreparedJupiterSwap,
   getWalletTokenBalanceAtomic,
+  JupiterBlockhashExpiredError,
   prepareJupiterSwap,
   type ConfirmedSwapReceipt,
   type PreparedJupiterSwap,
@@ -415,7 +416,7 @@ export function TradingTerminalScreen() {
     }
   };
 
-  const prepare = async () => {
+  const prepare = async (): Promise<readonly PreparedWalletSwap[] | undefined> => {
     if (!live) { toast.error("Direct swaps are enabled only on Solana Mainnet."); return; }
     if (tradeMode === "limit") { toast.error("Limit orders require the persistent executor. Open Sniper to arm them."); return; }
     if (mevMode === "private") { toast.error("Private relay is not configured in this browser deployment. Select Standard RPC or configure the executor."); return; }
@@ -446,6 +447,7 @@ export function TradingTerminalScreen() {
       setPhase("ready");
       workspace.record({ category: "simulation", action: "Wallet basket simulated", detail: `${direction} ${selected.symbol} for ${next.length} signer(s); platformFeeBps=0; every unsigned RPC simulation passed.`, state: "passed", network });
       toast.success(`${next.length} wallet transaction${next.length === 1 ? "" : "s"} built and simulated.`);
+      return next;
     } catch (prepareError) {
       if (controller.signal.aborted) return;
       const detail = prepareError instanceof Error ? prepareError.message : String(prepareError);
@@ -453,16 +455,17 @@ export function TradingTerminalScreen() {
       setPhase("failed");
       workspace.record({ category: "simulation", action: "Direct swap preparation failed", detail, state: "failed", network });
       toast.error(detail);
+      return undefined;
     } finally {
       if (quoteAbort.current === controller) quoteAbort.current = undefined;
     }
   };
 
-  const execute = async () => {
-    if (preparedBasket.length === 0 || !selected) return;
+  const execute = async (basket: readonly PreparedWalletSwap[] = preparedBasket) => {
+    if (basket.length === 0 || !selected) return;
     if (executing.current) return;
     const alreadyConfirmed = new Set(confirmedBasket.map((entry) => entry.walletId));
-    const pendingBasket = preparedBasket.filter((entry) => !alreadyConfirmed.has(entry.walletId));
+    const pendingBasket = basket.filter((entry) => !alreadyConfirmed.has(entry.walletId));
     if (pendingBasket.length === 0) return;
     executing.current = true;
     setError(undefined);
@@ -471,15 +474,30 @@ export function TradingTerminalScreen() {
     try {
       for (const entry of pendingBasket) {
         activeEntry = entry;
-        const confirmed = await executePreparedJupiterSwap({
-          client,
-          wallet: entry.wallet,
-          prepared: entry.prepared,
+        let prepared = entry.prepared;
+        let submitted = false;
+        const run = () => executePreparedJupiterSwap({
+          client, wallet: entry.wallet, prepared,
           onState: (state: SwapExecutionState, signature?: string) => {
             setPhase(state === "confirmed" ? "processed" : state);
+            if (state === "submitted") submitted = true;
             if (state === "submitted" && signature) toast.info(`${entry.connectorName} submitted. Waiting for canonical RPC confirmation.`);
           },
         });
+        let confirmed: ConfirmedSwapReceipt;
+        try {
+          confirmed = await run();
+        } catch (executionError) {
+          if (!(executionError instanceof JupiterBlockhashExpiredError) || submitted) throw executionError;
+          // A wallet prompt or a slow provider can outlive a fresh quote. It is
+          // safe to rebuild here because no signed transaction was submitted.
+          setPhase("quoting");
+          prepared = await prepareJupiterSwap({ client, intent: prepared.intent });
+          setPreparedBasket((current) => Object.freeze(current.map((candidate) => candidate.walletId === entry.walletId
+            ? Object.freeze({ ...candidate, prepared })
+            : candidate)));
+          confirmed = await run();
+        }
         const result = Object.freeze({ walletId: entry.walletId, connectorName: entry.connectorName, receipt: confirmed });
         setConfirmedBasket((current) => Object.freeze([...current, result]));
         const walletAddress = entry.wallet.account.address.toString();
@@ -500,7 +518,7 @@ export function TradingTerminalScreen() {
         } catch { /* The 10-second balance poll remains the fallback. */ }
       }
       setPhase("confirmed");
-      toast.success(`${preparedBasket.length}/${preparedBasket.length} wallet swaps confirmed by RPC.`);
+      toast.success(`${basket.length}/${basket.length} wallet swaps confirmed by RPC.`);
     } catch (executeError) {
       const detail = executeError instanceof Error ? executeError.message : String(executeError);
       setError(detail);
@@ -510,6 +528,15 @@ export function TradingTerminalScreen() {
     } finally {
       executing.current = false;
     }
+  };
+
+  const tradeNow = async () => {
+    if (phase === "failed" && preparedBasket.length > confirmedBasket.length) {
+      await execute(preparedBasket);
+      return;
+    }
+    const basket = await prepare();
+    if (basket) await execute(basket);
   };
 
   if (family === "evm") return <EvmTerminalBoundary />;
@@ -536,6 +563,13 @@ export function TradingTerminalScreen() {
   const displayedWalletIds = [...walletRegistry.wallets.map((candidate) => candidate.id), ...visibleWallets.map((candidate) => candidate.id)];
   const selectedWalletCount = selectedSigners.length + networkWallets.filter((candidate) => selectedWalletIds.includes(candidate.id)).length;
   const allDisplayedSelected = displayedWalletIds.length > 0 && displayedWalletIds.every((id) => selectedWalletIds.includes(id));
+  const primaryTradeLabel = phase === "quoting" ? "Building fresh route…"
+    : phase === "awaiting-signature" ? "Approve in wallet…"
+      : phase === "signed" ? "Signed · simulating…"
+        : phase === "submitted" || phase === "processed" ? "Submitted · confirming…"
+          : phase === "confirmed" ? `${confirmedBasket.length} confirmed by RPC`
+            : phase === "failed" && pendingPreparedCount > 0 ? `Retry ${pendingPreparedCount} pending`
+              : `${direction === "buy" ? "Buy" : "Sell"} ${selected?.symbol ?? "token"}${selectedSigners.length > 0 ? ` · ${selectedSigners.length}` : ""}`;
   const toggleWalletSelection = (walletId: string) => setSelectedWalletIds((current) => current.includes(walletId)
     ? Object.freeze(current.filter((id) => id !== walletId))
     : Object.freeze([...current, walletId]));
@@ -662,7 +696,7 @@ export function TradingTerminalScreen() {
                 {tradeMode === "advanced" ? <Toggle checked={fastMode} onCheckedChange={(value) => { if (settling) return; invalidateQuote(); setFastMode(value); }} label="Fast route build" description="Unsigned and signed simulations still run before submission." /> : null}
                 <div className="terminal-trade-wallet-state"><span><Users size={13} /> {selectedSigners.length} signing wallet{selectedSigners.length === 1 ? "" : "s"} selected</span><span>{selectedSignerBalanceLoading ? "Balance…" : formatSol(selectedSignerBalanceLamports, 4)}</span></div>
 
-                <Button variant="primary" size="lg" className="terminal-quote-button" disabled={busy || !live || !selected || selectedSigners.length === 0 || mevMode === "private" || confirmedBasket.length > 0} onClick={() => void prepare()}>{phase === "quoting" ? <LoaderCircle className="spin" size={17} /> : <Zap size={17} />} {phase === "ready" ? "Refresh basket" : `Build & simulate ${direction}${selectedSigners.length > 0 ? ` · ${selectedSigners.length}` : ""}`}</Button>
+                <Button variant="primary" size="lg" className="terminal-quote-button" disabled={busy || !live || !selected || selectedSigners.length === 0 || mevMode === "private" || phase === "confirmed"} onClick={() => void tradeNow()}>{busy ? <LoaderCircle className="spin" size={17} /> : <Zap size={17} />} {primaryTradeLabel}</Button>
                 {walletRegistry.wallets.length === 0 ? <button type="button" className="terminal-connect-inline" disabled={walletRegistry.creatingEmbeddedWallet} onClick={() => void createSignerWallet()}>{walletRegistry.creatingEmbeddedWallet ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />} Create signing wallet</button> : selectedSigners.length === 0 ? <p className="terminal-wallet-note"><WalletCards size={14} /> Select at least one signer in the Wallets panel.</p> : <p className="terminal-wallet-note"><ShieldCheck size={14} /> Amount applies to each selected signer; every wallet confirms separately.</p>}
 
                 {prepared ? <div className="terminal-quote-rows terminal-quote-rows--compact">
@@ -675,7 +709,6 @@ export function TradingTerminalScreen() {
                   {direction === "buy" ? <div><span>1% competitor fee saved</span><strong className="is-positive">{formatSol(referenceVenueFee)}</strong></div> : null}
                 </div> : null}
                 {error ? <div className="terminal-error" role="alert"><AlertTriangle size={16} /><span>{error}</span></div> : null}
-                {pendingPreparedCount > 0 ? <Button variant="primary" size="lg" disabled={busy || (phase !== "ready" && phase !== "failed")} onClick={() => void execute()}><WalletCards size={17} /> {phase === "failed" ? `Retry ${pendingPreparedCount} pending` : `Sign ${pendingPreparedCount} and submit`}</Button> : null}
                 {latestConfirmed ? <div className="terminal-receipt"><CheckCircle2 size={20} /><div><strong>{confirmedBasket.length}/{preparedBasket.length} confirmed by RPC</strong><span>Latest slot {latestConfirmed.slot.toLocaleString()} · {formatSol(latestConfirmed.walletSolDeltaLamports)}</span><a href={explorerTransactionUrl(latestConfirmed.signature)} target="_blank" rel="noreferrer">Open latest receipt <ExternalLink size={12} /></a></div></div> : null}
               </>
             )}
