@@ -161,7 +161,7 @@ function TokenFeedRow({ token, active, disabled, onSelect }: { readonly token: T
   );
 }
 
-function PumpTape({ trades, status, token }: { readonly trades: readonly PumpTrade[]; readonly status: "idle" | "connecting" | "live" | "failed"; readonly token?: TokenInformation }) {
+function PumpTape({ trades, status, token }: { readonly trades: readonly PumpTrade[]; readonly status: "idle" | "connecting" | "live" | "polling" | "failed"; readonly token?: TokenInformation }) {
   return (
     <aside className="terminal-tape" aria-label="Live Pump trade tape">
       <header><div><Radio size={14} /><strong>Live trades</strong></div><Badge tone={status === "live" ? "good" : status === "failed" ? "bad" : "neutral"}>{status}</Badge></header>

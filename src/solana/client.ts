@@ -12,7 +12,7 @@ export const SOLANA_MAINNET_RPC_URL = resolveHttpEndpoint(
   import.meta.env.VITE_SOLANA_MAINNET_RPC_URL,
   import.meta.env.PROD ? "/api/solana/rpc" : "https://solana-rpc.publicnode.com",
 );
-export const SOLANA_MAINNET_WS_URL = import.meta.env.VITE_SOLANA_MAINNET_WS_URL?.trim() || "wss://solana-rpc.publicnode.com";
+export const SOLANA_MAINNET_WS_URL = import.meta.env.VITE_SOLANA_MAINNET_WS_URL?.trim() || "wss://api.mainnet-beta.solana.com";
 
 function client(endpoint: string, websocketEndpoint: string) {
   return createClient({

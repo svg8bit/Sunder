@@ -81,7 +81,7 @@ export function usePumpTradeStream(input: {
 }) {
   const cached = useMemo(() => readPumpTradeCache(input.mint), [input.mint]);
   const [trades, setTrades] = useState<readonly PumpTrade[]>([]);
-  const [status, setStatus] = useState<"idle" | "connecting" | "live" | "failed">("idle");
+  const [status, setStatus] = useState<"idle" | "connecting" | "live" | "polling" | "failed">("idle");
   const history = useQuery({
     queryKey: ["solana", "pump", "trade-history", input.mint, input.decimals],
     queryFn: async ({ signal }) => {
@@ -100,6 +100,7 @@ export function usePumpTradeStream(input: {
     staleTime: 60_000,
     gcTime: 5 * 60_000,
     retry: 1,
+    refetchInterval: input.enabled && status === "polling" ? 8_000 : false,
     refetchOnWindowFocus: false,
   });
 
@@ -128,7 +129,10 @@ export function usePumpTradeStream(input: {
       if (!active || retryScheduled) return;
       unsubscribe = undefined;
       if (attempts >= maxAttempts) {
-        setStatus("failed");
+        // A direct WebSocket can be blocked by a wallet browser or public RPC.
+        // Keep the confirmed tape moving through the CDN-cached history route
+        // instead of freezing the chart after the bounded reconnect attempts.
+        setStatus("polling");
         return;
       }
       retryScheduled = true;
