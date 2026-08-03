@@ -444,6 +444,7 @@ export async function fetchPumpTradeHistory(input: {
   if (signaturesPayload.error) throw new Error("Solana RPC rejected Pump signature history.");
   const signatures = signaturesPayload.result.filter((entry) => entry.err === null || entry.err === undefined);
   const trades: PumpTrade[] = [];
+  let resolvedTransactions = 0;
   const concurrency = 12;
   for (let offset = 0; offset < signatures.length; offset += concurrency) {
     const chunk = signatures.slice(offset, offset + concurrency);
@@ -455,7 +456,9 @@ export async function fetchPumpTradeHistory(input: {
         input.signal,
         input.fetcher,
       ));
-      if (parsed.error || !parsed.result?.meta?.logMessages) return [];
+      if (parsed.error) throw new Error("Solana RPC rejected a Pump transaction lookup.");
+      resolvedTransactions += 1;
+      if (!parsed.result?.meta?.logMessages) return [];
       return parsed.result.meta.logMessages.flatMap((log, eventIndex) => {
         try {
           const context = { signature: entry.signature, eventIndex, slot: parsed.result!.slot, decimals: input.decimals } as const;
@@ -469,6 +472,9 @@ export async function fetchPumpTradeHistory(input: {
     for (const response of responses) {
       if (response.status === "fulfilled") trades.push(...response.value);
     }
+  }
+  if (signatures.length > 0 && resolvedTransactions < Math.ceil(signatures.length * 0.8)) {
+    throw new Error("Solana RPC returned incomplete Pump transaction history.");
   }
   return mergePumpTradeHistory([], trades);
 }

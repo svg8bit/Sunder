@@ -45,4 +45,25 @@ describe("Vercel market-data cache boundary", () => {
     const response = await servePumpTradeHistory(new Request("https://sunder.test/api/market/pump-history?mint=nope&decimals=99"));
     expect(response.status).toBe(400);
   });
+
+  it("falls back when a free RPC returns incomplete transaction history", async () => {
+    const signature = "f".repeat(88);
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { readonly method: string };
+      if (body.method === "getSignaturesForAddress") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [{ signature, slot: 11, err: null }] }), { status: 200 });
+      }
+      if (String(input).includes("publicnode.com")) {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, error: { code: 429, message: "rate limited" } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 3, result: { slot: 11, meta: { logMessages: [] } } }), { status: 200 });
+    });
+    const response = await servePumpTradeHistory(
+      new Request("https://sunder.test/api/market/pump-history?mint=So11111111111111111111111111111111111111112&decimals=9"),
+      fetcher as unknown as typeof fetch,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-sunder-market-provider")).toBe("solana-foundation");
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
 });
