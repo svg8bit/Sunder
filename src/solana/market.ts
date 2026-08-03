@@ -6,9 +6,11 @@ import { z } from "zod";
 export const JUPITER_TOKENS_API = "https://lite-api.jup.ag/tokens/v2";
 export const PUMP_PROGRAM_ADDRESS = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 export const PUMP_AMM_PROGRAM_ADDRESS = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
 const TRADE_EVENT_DISCRIMINATOR = Uint8Array.from([189, 219, 127, 211, 78, 230, 97, 238]);
 const AMM_BUY_EVENT_DISCRIMINATOR = Uint8Array.from([103, 244, 82, 31, 44, 245, 119, 119]);
 const AMM_SELL_EVENT_DISCRIMINATOR = Uint8Array.from([62, 47, 55, 10, 165, 3, 220, 42]);
+const AMM_POOL_ACCOUNT_DISCRIMINATOR = Uint8Array.from([241, 154, 109, 4, 17, 177, 109, 188]);
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 function decodeBase64Bytes(value: string): Uint8Array {
@@ -64,6 +66,8 @@ const tokenInformationSchema = z.object({
   isVerified: z.boolean().optional(),
   fdv: optionalNumber,
   mcap: optionalNumber,
+  circSupply: optionalNumber,
+  totalSupply: optionalNumber,
   usdPrice: optionalNumber,
   liquidity: optionalNumber,
   stats5m: marketStatsSchema.optional(),
@@ -143,6 +147,11 @@ export interface PumpTrade {
   readonly virtualSolReservesLamports: bigint;
   readonly virtualTokenReservesAtomic: bigint;
   readonly priceSol: number;
+}
+
+export interface PumpAmmPoolMints {
+  readonly baseMint: string;
+  readonly quoteMint: string;
 }
 
 const pumpTradeWireSchema = z.object({
@@ -326,10 +335,24 @@ export function decodePumpTradeLog(
   return normalizePumpTradeEvent({ mint, solAmount, tokenAmount, isBuy, user, timestamp, virtualSolReserves, virtualTokenReserves, feeBasisPoints, fee, creatorFeeBasisPoints, creatorFee }, context);
 }
 
-export function decodePumpAmmTradeLog(
-  log: string,
-  context: { readonly signature: string; readonly eventIndex?: number; readonly slot: number; readonly decimals: number; readonly mint: string },
-): PumpTrade | undefined {
+interface RawPumpAmmTradeEvent {
+  readonly isBuy: boolean;
+  readonly timestamp: bigint;
+  readonly baseAmount: bigint;
+  readonly quoteAmount: bigint;
+  readonly poolBaseTokenReserves: bigint;
+  readonly poolQuoteTokenReserves: bigint;
+  readonly lpFeeBasisPoints: bigint;
+  readonly lpFee: bigint;
+  readonly protocolFeeBasisPoints: bigint;
+  readonly protocolFee: bigint;
+  readonly pool: string;
+  readonly user: string;
+  readonly creatorFeeBasisPoints: bigint;
+  readonly creatorFee: bigint;
+}
+
+function parsePumpAmmTradeLog(log: string): RawPumpAmmTradeEvent | undefined {
   if (!log.startsWith("Program data: ")) return undefined;
   let data: Uint8Array;
   try {
@@ -356,20 +379,20 @@ export function decodePumpAmmTradeLog(
   };
   const timestamp = view.getBigInt64(cursor, true);
   cursor += 8;
-  const tokenAmount = u64(); // base_amount_out (buy) or base_amount_in (sell)
+  const baseAmount = u64(); // base_amount_out (buy) or base_amount_in (sell)
   u64(); // max_quote_amount_in or min_quote_amount_out
   u64(); // user_base_token_reserves
   u64(); // user_quote_token_reserves
   const poolBaseTokenReserves = u64();
   const poolQuoteTokenReserves = u64();
-  const solAmount = u64(); // quote_amount_in or quote_amount_out
+  const quoteAmount = u64(); // quote_amount_in or quote_amount_out
   const lpFeeBasisPoints = u64();
   const lpFee = u64();
   const protocolFeeBasisPoints = u64();
   const protocolFee = u64();
   u64(); // quote amount with/without LP fee
   u64(); // exact user quote amount
-  key(); // pool
+  const pool = key();
   const user = key();
   key(); // user_base_token_account
   key(); // user_quote_token_account
@@ -378,18 +401,55 @@ export function decodePumpAmmTradeLog(
   key(); // coin_creator
   const creatorFeeBasisPoints = u64();
   const creatorFee = u64();
+  return Object.freeze({ isBuy, timestamp, baseAmount, quoteAmount, poolBaseTokenReserves, poolQuoteTokenReserves, lpFeeBasisPoints, lpFee, protocolFeeBasisPoints, protocolFee, pool, user, creatorFeeBasisPoints, creatorFee });
+}
+
+export function decodePumpAmmPoolAddress(log: string): string | undefined {
+  return parsePumpAmmTradeLog(log)?.pool;
+}
+
+export function decodePumpAmmPoolMints(data: Uint8Array): PumpAmmPoolMints | undefined {
+  // Pool account layout: discriminator + bump + index + creator + base mint + quote mint.
+  if (data.length < 107 || !bytesEqual(data.slice(0, 8), AMM_POOL_ACCOUNT_DISCRIMINATOR)) return undefined;
+  return Object.freeze({
+    baseMint: encodeBase58Bytes(data.slice(43, 75)),
+    quoteMint: encodeBase58Bytes(data.slice(75, 107)),
+  });
+}
+
+export function decodePumpAmmTradeLog(
+  log: string,
+  context: { readonly signature: string; readonly eventIndex?: number; readonly slot: number; readonly decimals: number; readonly mint: string; readonly poolMints: PumpAmmPoolMints },
+): PumpTrade | undefined {
+  const event = parsePumpAmmTradeLog(log);
+  if (!event) return undefined;
+  const targetIsBase = context.poolMints.baseMint === context.mint && context.poolMints.quoteMint === WRAPPED_SOL_MINT;
+  const targetIsQuote = context.poolMints.quoteMint === context.mint && context.poolMints.baseMint === WRAPPED_SOL_MINT;
+  // Pump AMM supports either mint order. An event only says base/quote; treating
+  // quote as SOL unconditionally turns reverse pools into impossible price
+  // wicks. Non-SOL pairs cannot populate a SOL-denominated chart at all.
+  if (!targetIsBase && !targetIsQuote) return undefined;
+  const solAmount = targetIsBase ? event.quoteAmount : event.baseAmount;
+  const tokenAmount = targetIsBase ? event.baseAmount : event.quoteAmount;
+  const virtualSolReserves = targetIsBase ? event.poolQuoteTokenReserves : event.poolBaseTokenReserves;
+  const virtualTokenReserves = targetIsBase ? event.poolBaseTokenReserves : event.poolQuoteTokenReserves;
+  const isTokenBuy = targetIsBase ? event.isBuy : !event.isBuy;
+  // AMM fees are denominated in the quote mint. Preserve exact lamports only
+  // when quote is wSOL; the BPS fields remain valid for either orientation.
+  const fee = targetIsBase ? event.lpFee + event.protocolFee : 0n;
+  const creatorFee = targetIsBase ? event.creatorFee : 0n;
   return normalizePumpTradeEvent({
     mint: context.mint,
-    user,
+    user: event.user,
     solAmount,
     tokenAmount,
-    isBuy,
-    timestamp,
-    virtualSolReserves: poolQuoteTokenReserves,
-    virtualTokenReserves: poolBaseTokenReserves,
-    feeBasisPoints: lpFeeBasisPoints + protocolFeeBasisPoints,
-    fee: lpFee + protocolFee,
-    creatorFeeBasisPoints,
+    isBuy: isTokenBuy,
+    timestamp: event.timestamp,
+    virtualSolReserves,
+    virtualTokenReserves,
+    feeBasisPoints: event.lpFeeBasisPoints + event.protocolFeeBasisPoints,
+    fee,
+    creatorFeeBasisPoints: event.creatorFeeBasisPoints,
     creatorFee,
   }, context);
 }
@@ -404,6 +464,16 @@ const transactionHistorySchema = z.object({
     slot: z.number().int().nonnegative(),
     meta: z.object({ logMessages: z.array(z.string().max(16_384)).max(4_096).nullable() }).nullable(),
   }).nullable(),
+  error: z.unknown().optional(),
+});
+
+const accountInfoSchema = z.object({
+  result: z.object({
+    value: z.object({
+      owner: z.string().min(32).max(64),
+      data: z.tuple([z.string().max(16_384), z.string().max(32)]),
+    }).nullable(),
+  }),
   error: z.unknown().optional(),
 });
 
@@ -425,6 +495,27 @@ async function rpcRequest(
   return response.json();
 }
 
+async function fetchPumpAmmPoolMints(input: {
+  readonly pool: string;
+  readonly rpcUrl: string;
+  readonly signal?: AbortSignal;
+  readonly fetcher?: typeof fetch;
+}): Promise<PumpAmmPoolMints | undefined> {
+  const payload = accountInfoSchema.parse(await rpcRequest(
+    input.rpcUrl,
+    "getAccountInfo",
+    [input.pool, { commitment: "confirmed", encoding: "base64" }],
+    input.signal,
+    input.fetcher,
+  ));
+  if (payload.error || !payload.result.value || payload.result.value.owner !== PUMP_AMM_PROGRAM_ADDRESS || payload.result.value.data[1] !== "base64") return undefined;
+  try {
+    return decodePumpAmmPoolMints(decodeBase64Bytes(payload.result.value.data[0]));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function fetchPumpTradeHistory(input: {
   readonly mint: string;
   readonly decimals: number;
@@ -444,6 +535,14 @@ export async function fetchPumpTradeHistory(input: {
   if (signaturesPayload.error) throw new Error("Solana RPC rejected Pump signature history.");
   const signatures = signaturesPayload.result.filter((entry) => entry.err === null || entry.err === undefined);
   const trades: PumpTrade[] = [];
+  const poolMintLookups = new Map<string, Promise<PumpAmmPoolMints | undefined>>();
+  const resolvePoolMints = (pool: string) => {
+    const cached = poolMintLookups.get(pool);
+    if (cached) return cached;
+    const lookup = fetchPumpAmmPoolMints({ pool, rpcUrl: input.rpcUrl, signal: input.signal, fetcher: input.fetcher });
+    poolMintLookups.set(pool, lookup);
+    return lookup;
+  };
   let resolvedTransactions = 0;
   const concurrency = 12;
   for (let offset = 0; offset < signatures.length; offset += concurrency) {
@@ -457,17 +556,37 @@ export async function fetchPumpTradeHistory(input: {
         input.fetcher,
       ));
       if (parsed.error) throw new Error("Solana RPC rejected a Pump transaction lookup.");
-      resolvedTransactions += 1;
-      if (!parsed.result?.meta?.logMessages) return [];
-      return parsed.result.meta.logMessages.flatMap((log, eventIndex) => {
+      if (!parsed.result?.meta?.logMessages) {
+        resolvedTransactions += 1;
+        return [];
+      }
+      const decoded: PumpTrade[] = [];
+      for (const [eventIndex, log] of parsed.result.meta.logMessages.entries()) {
+        const context = { signature: entry.signature, eventIndex, slot: parsed.result.slot, decimals: input.decimals } as const;
         try {
-          const context = { signature: entry.signature, eventIndex, slot: parsed.result!.slot, decimals: input.decimals } as const;
-          const trade = decodePumpTradeLog(log, context) ?? decodePumpAmmTradeLog(log, { ...context, mint: input.mint });
-          return trade?.mint === input.mint ? [trade] : [];
+          const pumpTrade = decodePumpTradeLog(log, context);
+          if (pumpTrade?.mint === input.mint) {
+            decoded.push(pumpTrade);
+            continue;
+          }
         } catch {
-          return [];
+          // Ignore a malformed bonding-curve event without inventing a candle.
         }
-      });
+        const pool = decodePumpAmmPoolAddress(log);
+        if (!pool) continue;
+        // Provider failures must reject this transaction lookup so the API can
+        // try its secondary RPC instead of caching a misleading empty chart.
+        const poolMints = await resolvePoolMints(pool);
+        if (!poolMints) continue;
+        try {
+          const ammTrade = decodePumpAmmTradeLog(log, { ...context, mint: input.mint, poolMints });
+          if (ammTrade?.mint === input.mint) decoded.push(ammTrade);
+        } catch {
+          // Ignore non-SOL-paired or version-skewed AMM event data.
+        }
+      }
+      resolvedTransactions += 1;
+      return decoded;
     }));
     for (const response of responses) {
       if (response.status === "fulfilled") trades.push(...response.value);
@@ -512,11 +631,28 @@ const logsNotificationSchema = z.object({
 export async function subscribePumpTrades(input: {
   readonly mint: string;
   readonly decimals: number;
+  readonly rpcUrl: string;
   readonly websocketUrl: string;
   readonly onTrade: (trade: PumpTrade) => void;
   readonly onDisconnect?: () => void;
 }): Promise<() => Promise<void>> {
   const socket = new WebSocket(input.websocketUrl);
+  const lookupController = new AbortController();
+  const poolMintLookups = new Map<string, Promise<PumpAmmPoolMints | undefined>>();
+  const resolvePoolMints = (pool: string) => {
+    const cached = poolMintLookups.get(pool);
+    if (cached) return cached;
+    const lookup = fetchPumpAmmPoolMints({
+      pool,
+      rpcUrl: input.rpcUrl,
+      signal: AbortSignal.any([lookupController.signal, AbortSignal.timeout(4_500)]),
+    }).catch((error: unknown) => {
+      poolMintLookups.delete(pool);
+      throw error;
+    });
+    poolMintLookups.set(pool, lookup);
+    return lookup;
+  };
   const requestId = Math.floor(Math.random() * 1_000_000_000) + 1;
   let subscriptionId: number | undefined;
   let intentionalClose = false;
@@ -572,8 +708,22 @@ export async function subscribePumpTrades(input: {
       for (const [eventIndex, log] of value.logs.entries()) {
         try {
           const tradeContext = { signature: value.signature, eventIndex, slot: context.slot, decimals: input.decimals } as const;
-          const trade = decodePumpTradeLog(log, tradeContext) ?? decodePumpAmmTradeLog(log, { ...tradeContext, mint: input.mint });
-          if (trade?.mint === input.mint) input.onTrade(trade);
+          const pumpTrade = decodePumpTradeLog(log, tradeContext);
+          if (pumpTrade?.mint === input.mint) {
+            input.onTrade(pumpTrade);
+            continue;
+          }
+          const pool = decodePumpAmmPoolAddress(log);
+          if (!pool) continue;
+          void resolvePoolMints(pool).then((poolMints) => {
+            if (intentionalClose || !poolMints) return;
+            const ammTrade = decodePumpAmmTradeLog(log, { ...tradeContext, mint: input.mint, poolMints });
+            if (ammTrade?.mint === input.mint) input.onTrade(ammTrade);
+          }).catch(() => {
+            // Reconnect through the bounded policy; repeated HTTP lookup
+            // failures eventually switch the terminal to confirmed polling.
+            if (!intentionalClose) socket.close();
+          });
         } catch {
           // Ignore non-trade or version-skewed events; the aggregate token API remains live.
         }
@@ -587,6 +737,7 @@ export async function subscribePumpTrades(input: {
       } else reportDisconnect();
     };
     socket.onclose = () => {
+      lookupController.abort();
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
@@ -596,6 +747,7 @@ export async function subscribePumpTrades(input: {
   });
   return async () => {
     intentionalClose = true;
+    lookupController.abort();
     if (socket.readyState === WebSocket.OPEN && subscriptionId !== undefined) {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId + 1, method: "logsUnsubscribe", params: [subscriptionId] }));
     }

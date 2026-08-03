@@ -11,11 +11,12 @@ import {
   type JupiterBuildResponse,
   type PreparedJupiterSwap,
 } from "../src/solana/jupiter";
-import { decodePumpAmmTradeLog, decodePumpTradeLog, fetchPumpTradeHistory, fetchRecentTokens, normalizePumpTradeEvent, parsePumpTradeHistory, PUMP_PROGRAM_ADDRESS, safeTokenIcon, searchTokenInformation, serializePumpTradeHistory } from "../src/solana/market";
+import { decodePumpAmmPoolMints, decodePumpAmmTradeLog, decodePumpTradeLog, fetchPumpTradeHistory, fetchRecentTokens, normalizePumpTradeEvent, parsePumpTradeHistory, PUMP_AMM_PROGRAM_ADDRESS, PUMP_PROGRAM_ADDRESS, safeTokenIcon, searchTokenInformation, serializePumpTradeHistory } from "../src/solana/market";
 import { solanaStageError, stringifySolanaRpcValue } from "../src/solana/rpc-errors";
 import { deriveTrackedPosition, parseStoredTrades, type ConfirmedTradeRecord } from "../src/state/trading";
 
 const tokenMint = "ToKeN111111111111111111111111111111111111111";
+const ammTokenMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const wallet = "WaLLeT11111111111111111111111111111111111111";
 const program = "11111111111111111111111111111111";
 
@@ -42,7 +43,12 @@ function pumpTradeLog(mint = WRAPPED_SOL_MINT): string {
   return `Program data: ${Buffer.from(data).toString("base64")}`;
 }
 
-function pumpAmmTradeLog(side: "buy" | "sell" = "sell"): string {
+function pumpAmmTradeLog(side: "buy" | "sell" = "sell", values: Partial<{
+  baseAmount: bigint;
+  quoteAmount: bigint;
+  poolBaseReserves: bigint;
+  poolQuoteReserves: bigint;
+}> = {}): string {
   const data = new Uint8Array(side === "buy" ? 480 : 417);
   data.set(side === "buy" ? [103, 244, 82, 31, 44, 245, 119, 119] : [62, 47, 55, 10, 165, 3, 220, 42]);
   const view = new DataView(data.buffer);
@@ -50,13 +56,13 @@ function pumpAmmTradeLog(side: "buy" | "sell" = "sell"): string {
   const key = () => { data.set(getBase58Encoder().encode(PUMP_PROGRAM_ADDRESS), cursor); cursor += 32; };
   const u64 = (value: bigint) => { view.setBigUint64(cursor, value, true); cursor += 8; };
   view.setBigInt64(cursor, 1_700_000_000n, true); cursor += 8;
-  u64(1_000_000n); // base amount
+  u64(values.baseAmount ?? 1_000_000n); // base amount
   u64(3_500_000n); // max/min quote amount
   u64(10_000_000n); // user base reserves
   u64(1_000_000_000n); // user quote reserves
-  u64(1_000_000_000n); // pool base reserves (1,000 tokens at 6 decimals)
-  u64(3_000_000_000n); // pool quote reserves (3 SOL)
-  u64(3_000_000n); // actual quote amount
+  u64(values.poolBaseReserves ?? 1_000_000_000n); // pool base reserves
+  u64(values.poolQuoteReserves ?? 3_000_000_000n); // pool quote reserves
+  u64(values.quoteAmount ?? 3_000_000n); // actual quote amount
   u64(20n); u64(600n); // LP fee BPS + lamports
   u64(5n); u64(150n); // protocol fee BPS + lamports
   u64(3_000_600n); // quote with/without LP fee
@@ -64,6 +70,14 @@ function pumpAmmTradeLog(side: "buy" | "sell" = "sell"): string {
   for (let index = 0; index < 7; index += 1) key();
   u64(25n); u64(750n); // creator fee BPS + lamports
   return `Program data: ${Buffer.from(data).toString("base64")}`;
+}
+
+function pumpAmmPoolAccount(baseMint: string, quoteMint: string): string {
+  const data = new Uint8Array(261);
+  data.set([241, 154, 109, 4, 17, 177, 109, 188]);
+  data.set(getBase58Encoder().encode(baseMint), 43);
+  data.set(getBase58Encoder().encode(quoteMint), 75);
+  return Buffer.from(data).toString("base64");
 }
 
 function buildManifest(): JupiterBuildResponse {
@@ -378,12 +392,44 @@ describe("live token and Pump event validation", () => {
       eventIndex: 3,
       slot: 102,
       decimals: 6,
-      mint: tokenMint,
+      mint: ammTokenMint,
+      poolMints: { baseMint: ammTokenMint, quoteMint: WRAPPED_SOL_MINT },
     });
-    expect(decoded).toMatchObject({ mint: tokenMint, user: PUMP_PROGRAM_ADDRESS, side: "sell", eventIndex: 3, feeBasisPoints: 25, creatorFeeBasisPoints: 25, priceSol: 0.003 });
+    expect(decoded).toMatchObject({ mint: ammTokenMint, user: PUMP_PROGRAM_ADDRESS, side: "sell", eventIndex: 3, feeBasisPoints: 25, creatorFeeBasisPoints: 25, priceSol: 0.003 });
     const restored = parsePumpTradeHistory(JSON.parse(serializePumpTradeHistory([decoded!]))) as readonly typeof decoded[];
     expect(restored[0]?.tokenAmountAtomic).toBe(1_000_000n);
     expect(restored[0]?.virtualSolReservesLamports).toBe(3_000_000_000n);
+  });
+
+  it("orients a reverse wSOL/base Pump pool to the selected token instead of drawing an impossible wick", () => {
+    const cernRegression = pumpAmmTradeLog("sell", {
+      baseAmount: 20_000n,
+      quoteAmount: 6_624_267n,
+      poolBaseReserves: 20_716n,
+      poolQuoteReserves: 13_485_684n,
+    });
+    const decoded = decodePumpAmmTradeLog(cernRegression, {
+      signature: "c".repeat(88),
+      eventIndex: 9,
+      slot: 436_952_226,
+      decimals: 6,
+      mint: ammTokenMint,
+      poolMints: { baseMint: WRAPPED_SOL_MINT, quoteMint: ammTokenMint },
+    });
+    expect(decoded).toMatchObject({
+      side: "buy",
+      solAmountLamports: 20_000n,
+      tokenAmountAtomic: 6_624_267n,
+      virtualSolReservesLamports: 20_716n,
+      virtualTokenReservesAtomic: 13_485_684n,
+    });
+    expect(decoded!.priceSol).toBeCloseTo(0.0000015361475176194251, 16);
+    expect(decoded!.priceSol).not.toBeCloseTo(0.6509791465533887, 6);
+  });
+
+  it("decodes the official Pump AMM pool mint order from its account", () => {
+    const encoded = Buffer.from(pumpAmmPoolAccount(WRAPPED_SOL_MINT, ammTokenMint), "base64");
+    expect(decodePumpAmmPoolMints(encoded)).toEqual({ baseMint: WRAPPED_SOL_MINT, quoteMint: ammTokenMint });
   });
 
   it("backfills graduated Pump AMM events instead of losing the chart after refresh", async () => {
@@ -393,10 +439,14 @@ describe("live token and Pump event validation", () => {
       if (request.method === "getSignaturesForAddress") {
         return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [{ signature, slot: 102, err: null }] }), { status: 200 });
       }
+      if (request.method === "getAccountInfo") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 3, result: { value: { owner: PUMP_AMM_PROGRAM_ADDRESS, data: [pumpAmmPoolAccount(ammTokenMint, WRAPPED_SOL_MINT), "base64"] } } }), { status: 200 });
+      }
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { slot: 102, meta: { logMessages: [pumpAmmTradeLog("sell")] } } }), { status: 200 });
     });
-    const history = await fetchPumpTradeHistory({ mint: tokenMint, decimals: 6, rpcUrl: "https://rpc.example", fetcher: fetcherMock as unknown as typeof fetch });
-    expect(history).toMatchObject([{ signature, mint: tokenMint, side: "sell", priceSol: 0.003 }]);
+    const history = await fetchPumpTradeHistory({ mint: ammTokenMint, decimals: 6, rpcUrl: "https://rpc.example", fetcher: fetcherMock as unknown as typeof fetch });
+    expect(history).toMatchObject([{ signature, mint: ammTokenMint, side: "sell", priceSol: 0.003 }]);
+    expect(fetcherMock).toHaveBeenCalledTimes(3);
   });
 
   it("backfills bounded confirmed Pump transactions for real historical candles", async () => {

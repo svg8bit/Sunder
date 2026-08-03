@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { SOLANA_MAINNET_RPC_URL, SOLANA_MAINNET_WS_URL } from "./client";
-import { fetchPumpTradeHistory, fetchPumpTradeHistoryFromApi, fetchRecentTokens, mergeConfirmedPumpTrade, mergePumpTradeHistory, parsePumpTradeHistory, parseTokenInformationList, serializePumpTradeHistory, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
+import { WRAPPED_SOL_MINT } from "./jupiter";
+import { fetchPumpTradeHistory, fetchPumpTradeHistoryFromApi, fetchRecentTokens, mergeConfirmedPumpTrade, mergePumpTradeHistory, parsePumpTradeHistory, parseTokenInformationList, searchTokenInformation, serializePumpTradeHistory, subscribePumpTrades, type PumpTrade, type TokenInformation } from "./market";
 
 const RECENT_CACHE_KEY = "sunder:solana-recent-tokens:v1";
 const RECENT_CACHE_MAX_AGE_MS = 120_000;
-const PUMP_TRADE_CACHE_KEY = "sunder:solana-pump-trades:v1";
+const PUMP_TRADE_CACHE_KEY = "sunder:solana-pump-trades:v2";
 const PUMP_TRADE_CACHE_MAX_AGE_MS = 30 * 60_000;
 
 interface RecentTokenCache {
@@ -69,6 +70,22 @@ export function useRecentTokens(enabled: boolean) {
     initialDataUpdatedAt: cached?.at,
     refetchInterval: enabled ? 8_000 : false,
     staleTime: 4_000,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(3_000, 500 * 2 ** attempt),
+  });
+}
+
+export function useSolUsdPrice(enabled: boolean) {
+  return useQuery({
+    queryKey: ["jupiter", "tokens", "sol-usd"],
+    queryFn: async ({ signal }) => {
+      const sol = (await searchTokenInformation(WRAPPED_SOL_MINT, signal)).find((token) => token.id === WRAPPED_SOL_MINT);
+      if (!sol?.usdPrice || !Number.isFinite(sol.usdPrice) || sol.usdPrice <= 0) throw new Error("Jupiter did not return a valid SOL/USD index.");
+      return sol.usdPrice;
+    },
+    enabled,
+    staleTime: 60_000,
+    refetchInterval: enabled ? 60_000 : false,
     retry: 2,
     retryDelay: (attempt) => Math.min(3_000, 500 * 2 ** attempt),
   });
@@ -150,6 +167,7 @@ export function usePumpTradeStream(input: {
       void subscribePumpTrades({
         mint,
         decimals,
+        rpcUrl: SOLANA_MAINNET_RPC_URL,
         websocketUrl: SOLANA_MAINNET_WS_URL,
         onDisconnect: scheduleRetry,
         onTrade: (trade) => {

@@ -50,7 +50,7 @@ import {
 } from "../solana/jupiter";
 import { safeTokenIcon, searchTokenInformation, type PumpTrade, type TokenInformation } from "../solana/market";
 import { tokenMintFromPathname, tokenTerminalPath } from "../solana/token-route";
-import { usePumpTradeStream, useRecentTokens } from "../solana/use-market";
+import { usePumpTradeStream, useRecentTokens, useSolUsdPrice } from "../solana/use-market";
 import { useNetwork } from "../state/network";
 import { SOLANA_SIGNER_AVAILABLE_EVENT, SOLANA_SIGNER_SELECTION_STORAGE_KEY, useSolanaWalletRegistry } from "../state/solana-wallet-registry";
 import { deriveTrackedPosition, useTrading } from "../state/trading";
@@ -207,6 +207,7 @@ export function TradingTerminalScreen() {
   const trading = useTrading();
   const live = network === "solana:mainnet";
   const recent = useRecentTokens(live);
+  const solUsd = useSolUsdPrice(live);
   const [filter, setFilter] = useState<FeedFilter>("new");
   const [manualTokens, setManualTokens] = useState<readonly TokenInformation[]>([]);
   const [pinnedToken, setPinnedToken] = useState<TokenInformation>();
@@ -335,6 +336,10 @@ export function TradingTerminalScreen() {
   useEffect(() => () => quoteAbort.current?.abort(), []);
 
   const stream = usePumpTradeStream({ enabled: live && Boolean(selected), mint: selected?.id, decimals: selected?.decimals });
+  const indexedSupply = selected?.circSupply ?? selected?.totalSupply;
+  const confirmedPumpPriceUsd = stream.trades[0] && solUsd.data ? stream.trades[0].priceSol * solUsd.data : undefined;
+  const displayedPriceUsd = confirmedPumpPriceUsd ?? selected?.usdPrice;
+  const displayedMarketCapUsd = indexedSupply && displayedPriceUsd ? indexedSupply * displayedPriceUsd : selected?.mcap ?? selected?.fdv;
   const networkWallets = useMemo(() => workspace.wallets.filter((candidate) => candidate.network === network), [network, workspace.wallets]);
   const watchWalletKey = networkWallets.map((candidate) => `${candidate.id}:${candidate.address}`).join("|");
   const signingWalletKey = walletRegistry.wallets.map((candidate) => `${candidate.id}:${candidate.session.account.address.toString()}`).join("|");
@@ -638,9 +643,9 @@ export function TradingTerminalScreen() {
             <small>{selected ? <><button type="button" onClick={() => copy(selected.id)}>{shorten(selected.id, 7, 6)} <Copy size={11} /></button> · {sourceLabel(selected)} · <button type="button" onClick={() => copy(window.location.href, "Token link")} aria-label={`Copy ${selected.symbol} token page link`}>link <Share2 size={11} /></button></> : "Jupiter Tokens V2 · no synthetic market state"}</small>
           </span>
         </div>
-        <div><span>Price</span><strong>{formatUsd(selected?.usdPrice)}</strong></div>
+        <div><span>Price</span><strong>{formatUsd(displayedPriceUsd)}</strong></div>
         <div><span>Liquidity</span><strong>{formatCompact(selected?.liquidity, "$")}</strong></div>
-        <div><span>Market cap</span><strong>{formatCompact(selected?.mcap, "$")}</strong></div>
+        <div><span>Market cap</span><strong>{formatCompact(displayedMarketCapUsd, "$")}</strong></div>
         <div><span>Holders</span><strong>{formatCompact(selected?.holderCount)}</strong></div>
         <div><span>5m volume</span><strong>{selected ? formatCompact((selected.stats5m?.buyVolume ?? 0) + (selected.stats5m?.sellVolume ?? 0), "$") : "—"}</strong></div>
         <div><span>5m change</span><strong className={(selected?.stats5m?.priceChange ?? 0) >= 0 ? "is-positive" : "is-negative"}>{formatSigned(selected?.stats5m?.priceChange)}</strong></div>
@@ -665,7 +670,7 @@ export function TradingTerminalScreen() {
             <span><BarChart3 size={13} /> Live OHLC · observed data only</span>
             <button type="button" className="terminal-layout-reset" onClick={resetTerminalPanelLayout} title="Reset floating panels"><Move size={13} /> Reset panels</button>
           </div>
-          <LiveCandlestickChart instrumentId={selected?.id ?? "none"} observations={selected ? observations[selected.id] ?? [] : []} trades={stream.trades} symbol={selected?.symbol ?? "TOKEN"} interval={candleInterval} marketCapUsd={selected?.mcap ?? selected?.fdv} spotPriceUsd={selected?.usdPrice} />
+          <LiveCandlestickChart instrumentId={selected?.id ?? "none"} observations={selected ? observations[selected.id] ?? [] : []} trades={stream.trades} symbol={selected?.symbol ?? "TOKEN"} interval={candleInterval} marketCapUsd={selected?.mcap ?? selected?.fdv} spotPriceUsd={selected?.usdPrice} tokenSupply={indexedSupply} solPriceUsd={solUsd.data} />
           <div className="terminal-market__facts">
             <div><span>Buys / sells 5m</span><strong>{selected?.stats5m?.numBuys ?? "—"} / {selected?.stats5m?.numSells ?? "—"}</strong></div>
             <div><span>Traders 5m</span><strong>{selected?.stats5m?.numTraders ?? "—"}</strong></div>

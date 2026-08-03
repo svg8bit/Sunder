@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregateLiveCandles, createPumpAnchor } from "../src/components/live-candlestick-chart";
+import { aggregateLiveCandles, createPumpAnchor, createSupplyMarketCapFactor } from "../src/components/live-candlestick-chart";
 import { mergeConfirmedPumpTrade, type PumpTrade } from "../src/solana/market";
 
 function pumpTrade(signature: string, slot: number, timestamp: number): PumpTrade {
@@ -81,5 +81,11 @@ describe("live candlestick aggregation", () => {
     expect(anchor).toEqual({ instrumentId: "mint", factor: 3_000, metric: "market-cap" });
     expect(2 * anchor!.factor).toBe(6_000);
     expect(4 * anchor!.factor).toBe(12_000);
+  });
+
+  it("derives a stable market-cap scale from indexed supply and SOL/USD", () => {
+    const factor = createSupplyMarketCapFactor(806_391.443523, 72.5763465628178);
+    expect(factor).toBeCloseTo(58_524_944.8704, 3);
+    expect(createSupplyMarketCapFactor(undefined, 72)).toBeUndefined();
   });
 });

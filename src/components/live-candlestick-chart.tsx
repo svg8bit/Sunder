@@ -90,6 +90,8 @@ interface LiveCandlestickChartProps {
   readonly interval: CandleInterval;
   readonly marketCapUsd?: number;
   readonly spotPriceUsd?: number;
+  readonly tokenSupply?: number;
+  readonly solPriceUsd?: number;
 }
 
 export type PumpAnchor = Readonly<{ instrumentId: string; factor: number; metric: "market-cap" | "usd" }>;
@@ -111,7 +113,12 @@ export function createPumpAnchor(
   return undefined;
 }
 
-export function LiveCandlestickChart({ instrumentId, observations, trades, symbol, interval, marketCapUsd, spotPriceUsd }: LiveCandlestickChartProps) {
+export function createSupplyMarketCapFactor(tokenSupply?: number, solPriceUsd?: number): number | undefined {
+  const factor = (tokenSupply ?? 0) * (solPriceUsd ?? 0);
+  return finitePositive(factor) ? factor : undefined;
+}
+
+export function LiveCandlestickChart({ instrumentId, observations, trades, symbol, interval, marketCapUsd, spotPriceUsd, tokenSupply, solPriceUsd }: LiveCandlestickChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | undefined>(undefined);
   const candleSeries = useRef<ISeriesApi<"Candlestick"> | undefined>(undefined);
@@ -127,10 +134,17 @@ export function LiveCandlestickChart({ instrumentId, observations, trades, symbo
     () => createPumpAnchor(instrumentId, pumpTrades, marketCapUsd, spotPriceUsd),
     [instrumentId, marketCapUsd, pumpTrades, spotPriceUsd],
   );
+  const supplyFactor = createSupplyMarketCapFactor(tokenSupply, solPriceUsd);
+  const supplyAnchor = useMemo<PumpAnchor | undefined>(
+    () => supplyFactor ? Object.freeze({ instrumentId, factor: supplyFactor, metric: "market-cap" }) : undefined,
+    [instrumentId, supplyFactor],
+  );
   const pumpAnchorRef = useRef<PumpAnchor | undefined>(undefined);
   if (pumpAnchorRef.current?.instrumentId !== instrumentId) pumpAnchorRef.current = undefined;
   if (!pumpAnchorRef.current && anchorCandidate) pumpAnchorRef.current = anchorCandidate;
-  const pumpAnchor = pumpAnchorRef.current;
+  // Supply × SOL/USD has stable dimensional meaning for every confirmed
+  // reserve price. Use the snapshot anchor only when the provider omits supply.
+  const pumpAnchor = supplyAnchor ?? pumpAnchorRef.current;
   const impliedSupply = finitePositive(marketCapUsd ?? 0) && finitePositive(spotPriceUsd ?? 0) ? marketCapUsd! / spotPriceUsd! : undefined;
   const metric: "market-cap" | "usd" | "sol" = source === "pump" ? pumpAnchor?.metric ?? "sol" : impliedSupply ? "market-cap" : "usd";
   const candles = useMemo(() => aggregateLiveCandles(
@@ -235,7 +249,7 @@ export function LiveCandlestickChart({ instrumentId, observations, trades, symbo
       </div>
       <div className="market-chart__canvas" ref={container} role="img" aria-label={`${symbol} live ${interval}-second candlestick chart built only from observed provider data`} />
       {candles.length === 0 ? <div className="market-chart__empty"><BarChart3 size={22} /><strong>Waiting for first live observation</strong><span>No historical candles are fabricated.</span></div> : null}
-      <figcaption>Live OHLC only: {source === "pump" ? `${pumpTrades.length} confirmed Pump reserve-price events; empty intervals remain empty${metric === "market-cap" ? "; market-cap scale anchored once to the current Jupiter index" : ""}` : `${observations.length} Jupiter price samples`}. Pan, zoom and crosshair are interactive. <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a>.</figcaption>
+      <figcaption>Live OHLC only: {source === "pump" ? `${pumpTrades.length} confirmed Pump reserve-price events; empty intervals remain empty${supplyAnchor ? "; MCap = indexed supply × SOL/USD × confirmed SOL price" : metric === "market-cap" ? "; market-cap scale anchored once to the current Jupiter index" : ""}` : `${observations.length} Jupiter price samples`}. Pan, zoom and crosshair are interactive. <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a>.</figcaption>
     </figure>
   );
 }
