@@ -65,6 +65,37 @@ describe("SolanaConfirmationAdapter", () => {
     const result = await new SolanaConfirmationAdapter(rpc, { networks: ["solana:devnet"], pollIntervalMs: 0 }).track(transaction());
     expect(result).toMatchObject({ confirmed: false, state: "expired" });
   });
+
+  it("prefers canonical blockhash validity when a provider reports slot-like block heights", async () => {
+    const getSignatureStatus = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ confirmationStatus: "confirmed", slot: 436_946_654n });
+    const getBlockHeight = vi.fn(async () => 436_946_709n);
+    const rpc: ConfirmationRpc = {
+      getSignatureStatus,
+      isBlockhashValid: vi.fn(async () => true),
+      getBlockHeight,
+    };
+    const result = await new SolanaConfirmationAdapter(rpc, { networks: ["solana:mainnet"], pollIntervalMs: 0, timeoutMs: 1_000 })
+      .track(transaction(415_002_344n));
+    expect(result).toMatchObject({ confirmed: true, state: "confirmed" });
+    expect(getBlockHeight).not.toHaveBeenCalled();
+  });
+
+  it("performs one final signature lookup before declaring an invalid blockhash expired", async () => {
+    const getSignatureStatus = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ confirmationStatus: "finalized", slot: 436_946_654n });
+    const rpc: ConfirmationRpc = {
+      getSignatureStatus,
+      isBlockhashValid: vi.fn(async () => false),
+      getBlockHeight: vi.fn(async () => 436_946_709n),
+    };
+    const result = await new SolanaConfirmationAdapter(rpc, { networks: ["solana:mainnet"], pollIntervalMs: 0, timeoutMs: 1_000 })
+      .track(transaction(415_002_344n));
+    expect(result).toMatchObject({ confirmed: true, state: "finalized" });
+    expect(getSignatureStatus).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("Pump transaction simulation", () => {

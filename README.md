@@ -91,4 +91,4 @@ Then open `/launch`, `/sniper`, `/swap` and `/docs` in desktop and mobile browse
 - Signer: separate policy-enforcing process reached only through a restricted Unix socket.
 - Secrets: credential files or provider secret stores; never browser variables or repository files.
 
-The executor is intentionally not started with a funded signer by repository setup. Follow [the runbook](docs/EXECUTOR_RUNBOOK.md) and pass every readiness gate before any Mainnet acceptance transaction.
+Repository setup does not create or fund a signer. Follow [the runbook](docs/EXECUTOR_RUNBOOK.md) and pass every readiness gate before any Mainnet transaction. The isolated operator's first bounded Solana Mainnet pipeline acceptance and its exact canonical RPC evidence are recorded [here](docs/evidence/2026-08-03-solana-mainnet-sniper-acceptance.md); this is not a claim that a fresh install or an external user's signer is automatically funded or enabled.

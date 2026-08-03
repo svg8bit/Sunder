@@ -72,12 +72,15 @@ The bundled signer currently implements the Solana side. EVM stays locked unless
 
 Set `SUNDER_AUTOMATION_ENABLED=true` and install a reviewed, mode-`0600` copy of `deploy/config/automation-mainnet.example.json`. On startup the executor subscribes to official Pump program logs at `processed` commitment for low-latency detection, decodes only `CreateEvent`, deduplicates signatures, and feeds a bounded queue. Every candidate still passes deterministic rules, a fresh Pump SDK quote, risk limits, transaction construction, simulation, signer policy, health-weighted relay routing, bounded retry and canonical RPC confirmation.
 
+This source is direct Solana program traffic. PumpPortal is not required or configured: the browser's confirmed-trade polling affects only terminal display latency and is not in the executor path.
+
 The example rule is deliberately inert until `REPLACE_WITH_REQUIRED_TOKEN_KEYWORD` is changed and top-level `enabled` is set to `true`. Never change it to a catch-all rule for the first funded acceptance run. Use one keyword, creator allowlist or exact mint and `maxConfirmedExecutions: 1` first.
 
 - Automation status: authenticated `GET /v1/automation`
 - Event source: Pump `CreateEvent` program logs over the configured WebSocket/RPC provider
 - Queue: bounded by `SUNDER_AUTOMATION_MAX_QUEUE`, serialized by the executor funding account
 - Success: only `confirmed` or `finalized` from canonical RPC; a Jito/RPC acceptance is only `submitted`
+- Expiry: use canonical `isBlockhashValid` and perform a final signature lookup before returning `expired`; never compare a slot-like provider response with `lastValidBlockHeight`
 
 ## Test-network activation
 
@@ -106,6 +109,8 @@ Mainnet remains locked unless every readiness gate passes:
 9. A deliberately small acceptance transaction verified through RPC: canonical signature/receipt, exact submitted transaction, expected funding account and expected action state. Then cross-check the explorer as secondary evidence.
 
 For a zero-subscription bootstrap, Sunder can use a best-effort public RPC plus Jito's official transaction endpoint. Public RPCs have rate limits and no SLA, and Jito's default unauthenticated allowance is rate-limited per IP and region. This is suitable for a tightly bounded first acceptance wallet, not a promise of competitive production latency. Move to a project-scoped provider (for example a free Helius project tier) before onboarding external funded users.
+
+The first funded Solana Mainnet pipeline acceptance completed on 2026-08-03. Its canonical signature, exact token output, wallet delta, fee/rent breakdown, false-expiry reconciliation and verified boundary are recorded in [the acceptance evidence](evidence/2026-08-03-solana-mainnet-sniper-acceptance.md).
 
 Do not infer Mainnet readiness from HTTP 200 at a relay, a transaction hash, a predicted contract address, or a simulation. Disable immediately with the authenticated `POST /v1/kill-switch` endpoint or stop the service.
 

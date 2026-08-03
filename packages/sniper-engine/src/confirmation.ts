@@ -13,6 +13,7 @@ export interface ConfirmationRpc {
     signal: AbortSignal,
   ): Promise<void> | void;
   getSignatureStatus(signature: string, signal?: AbortSignal): Promise<RpcSignatureStatus | null>;
+  isBlockhashValid?(blockhash: string, signal?: AbortSignal): Promise<boolean>;
   getBlockHeight(signal?: AbortSignal): Promise<bigint>;
 }
 
@@ -33,6 +34,34 @@ function shouldReplaceStatus(next: RpcSignatureStatus, current: RpcSignatureStat
   const nextRank = next.confirmationStatus ? STATUS_RANK[next.confirmationStatus] : 0;
   const currentRank = current.confirmationStatus ? STATUS_RANK[current.confirmationStatus] : 0;
   return nextRank >= currentRank;
+}
+
+function terminalResult(
+  status: RpcSignatureStatus,
+  signature: string,
+  observations: ConfirmationObservation[],
+): ConfirmationResult | undefined {
+  observations.push(observation(status));
+  if (status.error) {
+    return {
+      confirmed: false,
+      state: "failed",
+      signature,
+      observations,
+      finishedAt: Date.now(),
+      error: status.error,
+    };
+  }
+  if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") {
+    return {
+      confirmed: true,
+      state: status.confirmationStatus,
+      signature,
+      observations,
+      finishedAt: Date.now(),
+    };
+  }
+  return undefined;
 }
 
 export class SolanaConfirmationAdapter implements ConfirmationAdapter {
@@ -72,29 +101,18 @@ export class SolanaConfirmationAdapter implements ConfirmationAdapter {
         const status = subscriptionStatus ?? await this.#rpc.getSignatureStatus(transaction.signature, combined);
         subscriptionStatus = null;
         if (status) {
-          observations.push(observation(status));
-          if (status.error) {
-            return {
-              confirmed: false,
-              state: "failed",
-              signature: transaction.signature,
-              observations,
-              finishedAt: Date.now(),
-              error: status.error,
-            };
-          }
-          if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") {
-            return {
-              confirmed: true,
-              state: status.confirmationStatus,
-              signature: transaction.signature,
-              observations,
-              finishedAt: Date.now(),
-            };
-          }
+          const result = terminalResult(status, transaction.signature, observations);
+          if (result) return result;
         }
-        const blockHeight = await this.#rpc.getBlockHeight(combined);
-        if (blockHeight > transaction.draft.lifetime.lastValidBlockHeight) {
+        const blockhashValid = this.#rpc.isBlockhashValid
+          ? await this.#rpc.isBlockhashValid(transaction.draft.lifetime.blockhash, combined)
+          : await this.#rpc.getBlockHeight(combined) <= transaction.draft.lifetime.lastValidBlockHeight;
+        if (!blockhashValid) {
+          const finalStatus = await this.#rpc.getSignatureStatus(transaction.signature, combined);
+          if (finalStatus) {
+            const result = terminalResult(finalStatus, transaction.signature, observations);
+            if (result) return result;
+          }
           observations.push({ state: "expired", observedAt: Date.now() });
           return {
             confirmed: false,

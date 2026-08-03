@@ -12,11 +12,11 @@ This matrix distinguishes implemented code from configured infrastructure and in
 | Exact simulation | Implemented | Implemented | `eth_call` + `estimateGas` | `eth_call` + `estimateGas` |
 | Read-only live acceptance | Test fixtures only | Fresh Jupiter `Pump.fun` route for `0.002 SOL` → unsigned simulation passed on 2026-08-03; `202592` CU, `5398` lamport fee estimate and canonical `isBlockhashValid=true` | Test fixtures only | Not run |
 | Relays | Standard RPC; private relays optional | Standard RPC + Jito enabled in the isolated operator runtime; Nozomi/0slot adapters remain unconfigured | RPC/Flashbots adapter | RPC/Flashbots adapter; operator config absent |
-| Confirmation | Signature poll/subscription + expiry | Same | Receipt depth + canonical hash + replacement/reorg | Same |
+| Confirmation | Signature poll/subscription + canonical blockhash validity | `isBlockhashValid`, final signature lookup and finalized live evidence | Receipt depth + canonical hash + replacement/reorg | Same |
 | Persistent executor | Built and service-tested | Isolated loopback service running; all readiness gates passed on 2026-08-03 under one bounded acceptance rule | Built and service-tested | Built but locked |
 | External signer | Interface and socket protocol implemented; not provisioned | Policy signer provisioned over a protected Unix socket for the dedicated operator address | Interface and socket protocol implemented; not provisioned | Not provisioned |
-| Funded on-chain acceptance evidence | Not run on this VPS; requires RPC signature and expected account/action state | Not run | Not run on this VPS; requires canonical receipt and exact transaction intent | Not run |
-| Current execution state | Requires test wallet and funds | **Interactive one-click wallet-signed swaps enabled; bounded operator sniper armed, but no matching funded execution is yet canonically confirmed** | Requires test wallet, RPC and signer config | **Locked** |
+| Funded on-chain acceptance evidence | Not run on this VPS; requires RPC signature and expected account/action state | **Finalized 2026-08-03: exact `0.001 SOL` Pump Token-2022 buy, `35,323.892686` output, exact transaction and balance verified through canonical RPC** | Not run on this VPS; requires canonical receipt and exact transaction intent | Not run |
+| Current execution state | Requires test wallet and funds | **Interactive one-click wallet-signed swaps enabled; bounded operator Pump execution verified and keyword automation running under a separate one-shot policy** | Requires test wallet, RPC and signer config | **Locked** |
 
 ## What is working without further infrastructure
 
@@ -31,10 +31,11 @@ This matrix distinguishes implemented code from configured infrastructure and in
 - Persistent public connector/session metadata, ten-second confirmed-RPC SOL balance refresh and signer-aware wallet-basket planning; watch-only addresses are excluded from every signing path.
 - Fixed-supply ERC-20 bytecode generation and deployment encoding.
 - Executor build, liveness, readiness matrix, authentication and kill-switch tests. The isolated Mainnet instance returned HTTP 200 for `/health` and `/ready` on 2026-08-03; all 14 gates passed, its Pump log source was running, and unrelated launches were skipped without spending funds.
+- One funded exact-mint Mainnet acceptance is canonically finalized. The executor spent a requested `0.001 SOL`, received `35,323.892686` Token-2022 units, and recorded the exact transaction, fees, first-use rent and wallet deltas. See [the public RPC evidence](evidence/2026-08-03-solana-mainnet-sniper-acceptance.md).
 
 ## What remains intentionally locked
 
-- The first funded sniper acceptance remains unverified until a newly created Pump token matches the narrow `SUNDER` keyword rule and the resulting transaction is canonically confirmed. The armed policy spends `0.001 SOL`, permits two bounded attempts and stops after one confirmed execution.
+- The funded execution pipeline is verified, but the continuously running `SUNDER` keyword rule has not itself matched a launch. The accepted transaction used a protected exact-mint trigger derived from a real Pump `CreateEvent`; this distinction is retained in the audit and evidence.
 - General multi-user unattended automation remains locked until each user has an explicit, isolated signer policy and funding boundary. A Phantom connection authorization can persist, but Phantom must still approve each new transaction; Sunder never caches a reusable transaction signature.
 - Any funded Ethereum Mainnet launch, swap or sniper execution.
 - Nozomi and 0slot remain unavailable until separate Sunder-scoped endpoints/credentials are configured; the current operator runtime has standard RPC and Jito only.
@@ -49,4 +50,4 @@ The release pins Vite `6.4.3` and PostCSS `8.5.18`, which removes the directly a
 
 Sunder therefore disables dependency lifecycle scripts in the committed `.npmrc`. A clean `npm ci --ignore-scripts` followed by the full production build was verified on this VPS, so the vulnerable native binding is not compiled and the dependency uses its pure-JavaScript path. This is a mitigation, not a claim that the upstream audit is clean. Any future dependency update must preserve the official Pump behavior, repeat the clean-install/build test, and rerun the complete chain-adapter suite. The bounded signer and risk policies remain mandatory independently of this dependency boundary.
 
-The next Mainnet step is to create one deliberately named Pump token containing `SUNDER` while the one-shot acceptance rule is armed. Acceptance requires RPC verification of the canonical signature, the exact submitted transaction, the expected funding account and the resulting token balance. Explorer display is useful secondary evidence, but cannot replace those RPC checks.
+The next Mainnet step is to replace the acceptance keyword with one reviewed trading rule or creator allowlist, keep a one-confirmation cap, and observe its first automatic `CreateEvent → execution` handoff. Before external funded users are onboarded, provision a project-scoped RPC with an SLA and an isolated signer/funding policy per user. Explorer display remains secondary to canonical RPC checks.

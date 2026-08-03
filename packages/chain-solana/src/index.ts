@@ -308,6 +308,12 @@ function createConfirmationRpc(connection: Connection): ConfirmationRpc {
         error: value.err ? JSON.stringify(value.err) : undefined,
       };
     },
+    async isBlockhashValid(blockhash, signal) {
+      if (signal?.aborted) throw new DOMException("Operation aborted", "AbortError");
+      const response = await connection.isBlockhashValid(blockhash, { commitment: "confirmed" });
+      if (signal?.aborted) throw new DOMException("Operation aborted", "AbortError");
+      return response.value;
+    },
     async getBlockHeight(signal) {
       if (signal?.aborted) throw new DOMException("Operation aborted", "AbortError");
       return BigInt(await connection.getBlockHeight("confirmed"));
